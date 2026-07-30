@@ -30,7 +30,13 @@ for fname in os.listdir(root_dir):
     fpath = os.path.join(root_dir, fname)
     if os.path.isfile(fpath):
         ext = os.path.splitext(fname)[1].lower()
+        is_temp_file = False
         if ext in [".pdf", ".docx", ".doc", ".txt"] and fname not in original_pdf_names:
+            is_temp_file = True
+        elif ext == ".py" and any(fname.startswith(prefix) for prefix in ["test_", "inspect_", "check_", "verify_", "compare_", "diagnose_", "debug_"]):
+            is_temp_file = True
+            
+        if is_temp_file:
             try:
                 os.remove(fpath)
                 print(f"  🗑️ Đã xóa file rác rưởi: {fname}")

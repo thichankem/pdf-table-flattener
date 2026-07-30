@@ -346,30 +346,71 @@ def fix_toc_paragraphs(doc: docx.Document):
                     np.paragraph_format.space_after = Pt(2)
                     parent_elm.insert(p_idx + l_offset, np._element)
 
-def unpack_text_table_inplace(doc: docx.Document, table: Table, grid: list[list[str]]):
+def process_nested_tables_in_cell(cell, separator: str = " | ", use_header: bool = True, show_row_indices: bool = False, bullet_prefix: bool = True):
     """
-    Unpacks single-column callouts or 1-row list items back into normal paragraphs
-    WITHOUT adding fake column headers or bullets.
+    Recursively finds and processes any nested tables inside a docx table cell,
+    converting them into formatted bullet text lines paragraphs inside the cell.
+    """
+    if not hasattr(cell, 'tables') or not cell.tables:
+        return
+    for nested_table in list(cell.tables):
+        for nr in nested_table.rows:
+            for nc in nr.cells:
+                process_nested_tables_in_cell(nc, separator=separator, use_header=use_header, show_row_indices=show_row_indices, bullet_prefix=bullet_prefix)
+        
+        ngrid = clean_table_grid(nested_table)
+        if is_header_footer_table(ngrid):
+            tbl_elm = nested_table._element
+            if tbl_elm.getparent() is not None:
+                tbl_elm.getparent().remove(tbl_elm)
+            continue
+            
+        formatted_text = format_table_to_dash_text(ngrid, separator=separator, use_header=use_header, show_row_indices=show_row_indices, bullet_prefix=bullet_prefix)
+        
+        tbl_elm = nested_table._element
+        parent_elm = tbl_elm.getparent()
+        tbl_index = parent_elm.index(tbl_elm)
+        
+        if formatted_text:
+            lines = formatted_text.splitlines()
+            for l_idx, line_str in enumerate(lines):
+                p = cell.add_paragraph()
+                p.text = line_str
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(2)
+                parent_elm.insert(tbl_index + l_idx, p._element)
+        parent_elm.remove(tbl_elm)
+
+def unpack_table_paragraphs_inplace(doc: docx.Document, table: Table):
+    """
+    Unpacks all paragraphs from all cells of a table directly into the document parent stream,
+    deleting the table container. Preserves line breaks and formatting cleanly.
     """
     tbl_elm = table._element
     parent_elm = tbl_elm.getparent()
     tbl_index = parent_elm.index(tbl_elm)
 
-    lines = []
-    for row in grid:
-        for val in row:
-            if val.strip():
-                lines.append(val.strip())
-
-    for offset, line_str in enumerate(lines):
-        p = doc.add_paragraph()
-        p.text = line_str
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.line_spacing = 1.0
-        parent_elm.insert(tbl_index + offset, p._element)
-
+    inserted_count = 0
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                txt = clean_text_string(p.text)
+                if txt:
+                    np = doc.add_paragraph()
+                    np.text = txt
+                    np.paragraph_format.space_before = Pt(0)
+                    np.paragraph_format.space_after = Pt(2)
+                    parent_elm.insert(tbl_index + inserted_count, np._element)
+                    inserted_count += 1
+    
     parent_elm.remove(tbl_elm)
+
+def unpack_text_table_inplace(doc: docx.Document, table: Table, grid: list[list[str]]):
+    """
+    Unpacks single-column callouts or 1-row list items back into normal paragraphs
+    WITHOUT adding fake column headers or bullets.
+    """
+    unpack_table_paragraphs_inplace(doc, table)
 
 def replace_table_inplace(doc: docx.Document, table: Table, text_content: str):
     """
@@ -596,12 +637,94 @@ def process_document(file_path: str, separator: str = " | ", use_header: bool = 
         doc = docx.Document(real_docx_path)
         extracted_texts = []
 
+        # 0. Process nested tables inside any table cells first
+        for t in list(doc.tables):
+            for r in t.rows:
+                for c in r.cells:
+                    process_nested_tables_in_cell(c, separator=separator, use_header=use_header, show_row_indices=show_row_indices, bullet_prefix=bullet_prefix)
+
         # 1. Fix Table of Contents (Mục lục) concatenated paragraphs
         fix_toc_paragraphs(doc)
 
-        tables_to_process = list(doc.tables)
-        for table in tables_to_process:
+        # 1.5 Merge cross-page continuation tables
+        # pdf2docx splits a single logical table spanning multiple pages into separate Table objects.
+        # Continuation tables have: same col count, first row col0+col1 empty, col2 has content.
+        # We merge them into logical groups before processing.
+        raw_tables = list(doc.tables)
+        table_groups = []  # Each group: [(table, grid), ...]
+        
+        for table in raw_tables:
             grid = clean_table_grid(table)
+            if not grid:
+                # Remove empty tables
+                tbl_elm = table._element
+                if tbl_elm.getparent() is not None:
+                    tbl_elm.getparent().remove(tbl_elm)
+                continue
+            
+            num_cols = max(len(r) for r in grid)
+            
+            # Check if this table is a continuation of the previous one
+            is_continuation = False
+            if table_groups and num_cols >= 3:
+                prev_group = table_groups[-1]
+                prev_grid = prev_group[-1][1]  # last table in prev group
+                prev_cols = max(len(r) for r in prev_grid) if prev_grid else 0
+                
+                if prev_cols == num_cols and len(grid) >= 1:
+                    # Check if first row has empty col0 and col1 (continuation indicator)
+                    first_row = grid[0]
+                    col0 = clean_text_string(first_row[0]) if len(first_row) > 0 else ""
+                    col1 = clean_text_string(first_row[1]) if len(first_row) > 1 else ""
+                    col2 = clean_text_string(first_row[2]) if len(first_row) > 2 else ""
+                    
+                    if not col0 and not col1 and col2:
+                        is_continuation = True
+            
+            if is_continuation:
+                table_groups[-1].append((table, grid))
+            else:
+                table_groups.append([(table, grid)])
+        
+        # Process each table group
+        for group in table_groups:
+            if len(group) == 1:
+                # Single table - process normally
+                table, grid = group[0]
+            else:
+                # Multi-table group (cross-page continuation) - merge grids
+                first_table = group[0][0]
+                merged_grid = list(group[0][1])  # Start with first table's grid
+                
+                for tbl_idx in range(1, len(group)):
+                    cont_table, cont_grid = group[tbl_idx]
+                    
+                    if cont_grid:
+                        # First row of continuation: col0+col1 empty, col2 has content
+                        # → Append col2 content to the LAST row's col2 of merged_grid
+                        first_cont_row = cont_grid[0]
+                        col2_content = clean_text_string(first_cont_row[2]) if len(first_cont_row) > 2 else ""
+                        
+                        if col2_content and merged_grid:
+                            last_row = merged_grid[-1]
+                            if len(last_row) > 2:
+                                existing = clean_text_string(last_row[2])
+                                if existing:
+                                    last_row[2] = existing + "\n" + col2_content
+                                else:
+                                    last_row[2] = col2_content
+                        
+                        # Add remaining rows from continuation table
+                        for r_idx in range(1, len(cont_grid)):
+                            merged_grid.append(cont_grid[r_idx])
+                    
+                    # Remove continuation table from document
+                    tbl_elm = cont_table._element
+                    if tbl_elm.getparent() is not None:
+                        tbl_elm.getparent().remove(tbl_elm)
+                
+                table = first_table
+                grid = merged_grid
             
             # Case 1: Empty or pure header/footer boxes -> Remove without adding bullet text
             if is_header_footer_table(grid):
@@ -613,9 +736,18 @@ def process_document(file_path: str, separator: str = " | ", use_header: bool = 
             num_rows = len(grid)
             num_cols = max(len(r) for r in grid) if num_rows > 0 else 0
 
-            # Case 2: 1-column callout boxes or single-row list markers -> Unpack as clean normal text
-            if num_cols == 1 or (num_rows == 1 and is_bullet_marker(grid[0][0])):
-                unpack_text_table_inplace(doc, table, grid)
+            # Case 2: 1-column callout boxes, 1-row section wrappers, or list markers -> Unpack as clean normal paragraphs
+            cell_has_bullet_lines = False
+            for r in grid:
+                for c in r:
+                    if "\n- " in c or c.startswith("- "):
+                        cell_has_bullet_lines = True
+                        break
+                if cell_has_bullet_lines:
+                    break
+
+            if num_cols == 1 or num_rows == 1 or cell_has_bullet_lines or (num_rows == 1 and is_bullet_marker(grid[0][0])):
+                unpack_table_paragraphs_inplace(doc, table)
                 continue
 
             # Case 3: Real Data Tables -> Convert to bullet key-value text lines

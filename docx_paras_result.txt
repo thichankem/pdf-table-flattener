@@ -1,0 +1,43 @@
+﻿python : [INFO] Start to convert C:\Users\ADMIN\OneDrive\Mßy tφnh\pdf-table-flattener\S\u1ea3n ph\u1ea9m cho vay CBNV 
+tr\u01b0\u1eddng \u0111\u1ea1i h\u1ecdc Qu\u1ed1c gia TP.H\u1ed3 Chφ Minh - kΩnh qu\u1ea7y.docx.pdf
+At line:1 char:1
++ python check_docx_paras.py 2>&1 | Out-File -Encoding utf8 docx_paras_ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([INFO] Start to...u1ea7y.docx.pdf:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[INFO] [1;36m[1/4] Opening document...[0m
+[INFO] [1;36m[2/4] Analyzing document...[0m
+[INFO] [1;36m[3/4] Parsing pages...[0m
+[INFO] (1/8) Page 1
+[INFO] (2/8) Page 2
+[INFO] (3/8) Page 3
+[INFO] (4/8) Page 4
+[INFO] (5/8) Page 5
+[INFO] (6/8) Page 6
+[INFO] (7/8) Page 7
+[INFO] (8/8) Page 8
+[INFO] [1;36m[4/4] Creating pages...[0m
+[INFO] (1/8) Page 1
+[INFO] (2/8) Page 2
+[INFO] (3/8) Page 3
+[INFO] (4/8) Page 4
+[INFO] (5/8) Page 5
+[INFO] (6/8) Page 6
+[INFO] (7/8) Page 7
+[INFO] (8/8) Page 8
+[INFO] Terminated in 1.19s.
+Total paragraphs in doc: 58
+Paragraph 26: - STT: 3.1 | Nß╗Öi dung: ─Éß╗æi t╞░ß╗úng kh├ích h├áng | Cß╗Ñ thß╗â: h h├áng l├á C├ín bß╗Ö nh├ón vi├¬n cß╗ºa ─Éß║íi hß╗ìc Quß╗æc Gia TP.HCM(kh├┤ng ao gß╗ô
+Paragraph 27: - STT: 3.2 | Nß╗Öi dung: ─Éiß╗üu kiß╗çn kh├ích h├áng | Cß╗Ñ thß╗â: -Kh├ích h├áng ─æß╗º 18 tuß╗òi trß╗ƒ l├¬n c├│ n─âng lß╗▒c h├ánh vi d├ón sß╗▒ ─æß║ºy ─æß╗º t
+Paragraph 33: - 3.5 | Hß║ín mß╗⌐c thß║Ñu chi | ─ÉVKD c─ân cß╗⌐ v├áo ─æß╗æi t╞░ß╗úng Kh├ích h├áng, thu nhß║¡p v├á nhu cß║ºu Kh├ích h├áng ─æß╗â x├íc ─æß╗ïnh HMTC kh├┤ng T
+Paragraph 38: - 3.10 | ng thß╗⌐c trß║ú nß╗ú | -Thu nß╗ú gß╗æc: Nß╗ú gß╗æc thß║Ñu chi ─æ╞░ß╗úc tß╗▒ ─æß╗Öng thu nß╗ú khi T├ái khoß║ún thß║Ñu chi cß╗ºa Kh├ích h├áng ph├ít si
+Paragraph 39: - 3.11m | quyß╗ün quyß║┐t ─æß╗ïnh ß║Ñp t├¡n dß╗Ñng | hiß╗çn theo quy ─æß╗ïnh cß╗ºa LPBank tß╗½ng thß╗¥i kß╗│2.
+Paragraph 40: - 3.12 | chß╗ënh HMTC | -HMTC ─æ╞░ß╗úc ─æiß╗üu chß╗ënh khi: +Trong thß╗¥i hß║ín HMTC, nß║┐u Kh├ích h├áng c├│ nhu cß║ºu ─æiß╗üu chß╗ënh HMTC, Kh├ích 
+Paragraph 41: - 3.13 | 3.13ß║ín, t├íi cß║Ñp HMTC | -Tß║íi thß╗¥i ─æiß╗âm hß║┐t hß║ín HMTC: +HMTC cß╗ºa Kh├ích h├áng sß║╜ tß╗▒ ─æß╗Öng ─æ├│ng v├áo ng├áy HMTC hß║┐t hiß╗çu
+Paragraph 42: - 3.14 | ß╗ân nß╗ú qu├í hß║ín v├á ß╗¡ l├╜ nß╗ú qu├í hß║ín | -Chuyß╗ân nß╗ú qu├í hß║ín: Thß╗▒c hiß╗çn theo h╞░ß╗¢ng dß║½n nhß║¡p liß╗çu Thß║Ñu chi cß╗ºa Ng├ón h├án
+Paragraph 43: - 3.15╞í | vay vß╗æn | -Bß║ún sao C─ân c╞░ß╗¢c c├┤ng d├ón/Thß║╗ c─ân c╞░ß╗¢c hoß║╖c c├íc chß╗⌐ng tß╗½ c├│ gi├í trß╗ï ph├íp l├╜ t╞░╞íng ─æ╞░╞íng kh├íc ph├╣ hß╗ú
+
+3.1 found in python-docx: True
+3.2 found in python-docx: True
+1.000 found in python-docx: True
