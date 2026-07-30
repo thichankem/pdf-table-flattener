@@ -67,14 +67,40 @@ def get_table_text_grid(table: Table) -> list[list[str]]:
         grid.append(row_cells)
     return grid
 
+def clean_text_string(text: str) -> str:
+    """
+    Cleans non-breaking space, zero-width space, BOM, null bytes, form feeds, and excessive spaces.
+    """
+    if not text:
+        return ""
+    t = text.replace('\xa0', ' ').replace('\u200b', '').replace('\ufeff', '').replace('\x00', '').replace('\x0c', '')
+    lines = [re.sub(r'[ \t]+', ' ', l).strip() for l in t.splitlines() if l.strip()]
+    return " ".join(lines).strip()
+
+def get_table_text_grid(table: Table) -> list[list[str]]:
+    """
+    Extracts 2D array of text strings from docx Table, cleaning up newlines and merged cells.
+    """
+    grid = []
+    for row in table.rows:
+        row_cells = []
+        for cell in row.cells:
+            raw_text = cell.text
+            clean_text = clean_text_string(raw_text)
+            row_cells.append(clean_text)
+        grid.append(row_cells)
+    return grid
+
 def is_bullet_marker(text: str) -> bool:
     """
-    Checks if a text string is a bullet/numbered list marker rather than a table header.
+    Checks if a text string is a bullet/numbered list marker or dash/punct rather than a table header.
     """
     s = text.strip().lower()
-    if not s or s in ['•', '▪', '*', '-', '+', '–', '(v)', '(i)', '(ii)', '(iii)', '(iv)', 'a.', 'b.', 'c.', 'd.']:
+    if not s or s in ['•', '▪', '*', '-', '+', '–', '—', '(v)', '(i)', '(ii)', '(iii)', '(iv)', 'a.', 'b.', 'c.', 'd.']:
         return True
-    if re.match(r'^(\([a-z0-9ivxlcdm]+\)|[a-z0-9]\.|[0-9]+\.|\([0-9]+\))$', s, re.IGNORECASE):
+    if re.match(r'^[-—–\.\*\•\+\s]+$', s):
+        return True
+    if re.match(r'^(\([a-z0-9ivxlcdm]+\)|[a-z0-9]\.|[0-9]+(\.[0-9]+)*\.?|\([0-9]+\))$', s, re.IGNORECASE):
         return True
     return False
 
@@ -86,15 +112,14 @@ def clean_table_grid(table: Table) -> list[list[str]]:
     for row in table.rows:
         row_cells = []
         for cell in row.cells:
-            raw_text = cell.text.strip()
-            clean_text = " ".join(raw_text.splitlines()).strip()
+            clean_text = clean_text_string(cell.text)
             row_cells.append(clean_text)
         grid.append(row_cells)
 
     # Filter out page header/footer rows (containing page numbers like X/34 or running title)
     cleaned_grid = []
     for row in grid:
-        row_str = " ".join(row)
+        row_str = " ".join(row).strip()
         if re.search(r'\b\d+/\d+\b', row_str) and ('Sản phẩm bảo hiểm' in row_str or 'Dai-ichi' in row_str or len(row_str) < 150):
             continue
         if not any(c.strip() for c in row):
@@ -115,11 +140,30 @@ def is_header_footer_table(grid: list[list[str]]) -> bool:
             return True
     return False
 
+def is_likely_header_row(row: list[str]) -> bool:
+    """
+    Determines if row 0 of a grid is a genuine column header row vs data row.
+    """
+    if not row or not any(row):
+        return False
+    # If any cell is extremely long (>80 chars), unlikely to be column headers
+    if any(len(c) > 80 for c in row if c):
+        return False
+    first = row[0].strip()
+    # If first cell is a section code like 3.1, 3.2, 3.16
+    if re.match(r'^\d+(\.\d+)+\.?$', first):
+        return False
+    # If first cell is a bullet marker
+    if is_bullet_marker(first):
+        return False
+    return True
+
 def format_table_to_dash_text(grid: list[list[str]], separator: str = " | ", use_header: bool = True, show_row_indices: bool = False, bullet_prefix: bool = True) -> str:
     """
     Converts 2D data table grid to formatted key-value bullet text lines (- Tên: Nam | Tuổi: 25 | Chức vụ: Dev).
-    Intelligently transposes 2-row horizontal matrix tables (e.g. Năm hợp đồng vs Tỷ lệ phí).
-    Deduplicates merged column headers cleanly.
+    Intelligently transposes 2-row horizontal matrix tables and handles Vertical Scenario Matrix tables
+    (e.g. Điều kiện / Tình huống / Thứ tự phân bổ phí) semantically without losing column associations.
+    Never injects fake 'Cột 1', 'Cột 2' labels or empty cell key names.
     """
     if not grid or not any(grid):
         return ""
@@ -129,68 +173,130 @@ def format_table_to_dash_text(grid: list[list[str]], separator: str = " | ", use
     lines = []
     prefix_str = "- " if bullet_prefix else ""
 
-    # Special handling for 2-row horizontal matrix tables (Row 0 metric vs Row 1 metric across columns 1..N)
+    # 1. Special handling for 2-row horizontal matrix tables (Row 0 metric vs Row 1 metric across columns 1..N)
     if num_rows == 2 and num_cols > 1:
-        metric0 = grid[0][0].strip() if len(grid[0]) > 0 else ""
-        metric1 = grid[1][0].strip() if len(grid[1]) > 0 else ""
+        metric0 = clean_text_string(grid[0][0]) if len(grid[0]) > 0 else ""
+        metric1 = clean_text_string(grid[1][0]) if len(grid[1]) > 0 else ""
         
-        # Check if Column 0 contains label metrics (e.g. Năm hợp đồng vs Tỷ lệ phí / % Phí / Lãi suất)
         if metric0 and metric1 and not is_bullet_marker(metric0):
             for c in range(1, num_cols):
-                val0 = grid[0][c].strip() if c < len(grid[0]) else ""
-                val1 = grid[1][c].strip() if c < len(grid[1]) else ""
+                val0 = clean_text_string(grid[0][c]) if c < len(grid[0]) else ""
+                val1 = clean_text_string(grid[1][c]) if c < len(grid[1]) else ""
                 if not val0 and not val1:
                     continue
                     
-                h0 = f"{metric0}: {val0}" if metric0 else val0
-                h1 = f"{metric1}: {val1}" if metric1 else val1
+                h0 = f"{metric0}: {val0}" if val0 else ""
+                h1 = f"{metric1}: {val1}" if val1 else ""
                 
-                line = f"{h0}{separator}{h1}"
-                lines.append(prefix_str + line)
-            return "\n".join(lines).strip()
+                parts = [p for p in [h0, h1] if p]
+                if parts:
+                    line = separator.join(parts)
+                    lines.append(prefix_str + line)
+            if lines:
+                return "\n".join(lines).strip()
 
-    if use_header and num_rows > 1:
+    # 2. Special handling for Vertical Scenario Matrix Tables (Col 0 contains row attribute keys across N scenario cols)
+    col0_is_labels = (num_cols > 1 and num_rows > 1)
+    if col0_is_labels:
+        for r in grid:
+            val0 = clean_text_string(r[0]) if len(r) > 0 else ""
+            if not val0 or is_bullet_marker(val0) or len(val0) > 80:
+                col0_is_labels = False
+                break
+
+    if col0_is_labels:
+        common_rows = []
+        varying_rows = []
+        
+        for r_i, r in enumerate(grid):
+            val1 = clean_text_string(r[1]) if len(r) > 1 else ""
+            all_same = True
+            for c_i in range(2, num_cols):
+                val_c = clean_text_string(r[c_i]) if c_i < len(r) else ""
+                if val_c != val1:
+                    all_same = False
+                    break
+            if all_same:
+                common_rows.append(r_i)
+            else:
+                varying_rows.append(r_i)
+
+        if varying_rows:
+            # Output common merged rows first
+            for r_i in common_rows:
+                k = clean_text_string(grid[r_i][0])
+                v = clean_text_string(grid[r_i][1]) if len(grid[r_i]) > 1 else ""
+                if k and v:
+                    lines.append(f"{prefix_str}{k}: {v}")
+                elif v:
+                    lines.append(f"{prefix_str}{v}")
+                    
+            # Output scenario columns 1..N
+            for c_i in range(1, num_cols):
+                col_parts = []
+                seen_col_parts = set()
+                for r_i in varying_rows:
+                    k = clean_text_string(grid[r_i][0])
+                    v = clean_text_string(grid[r_i][c_i]) if c_i < len(grid[r_i]) else ""
+                    if k and v:
+                        part = f"{k}: {v}"
+                    elif v:
+                        part = v
+                    else:
+                        continue
+                    if part not in seen_col_parts:
+                        seen_col_parts.add(part)
+                        col_parts.append(part)
+                if col_parts:
+                    lines.append(f"{prefix_str}{separator.join(col_parts)}")
+            if lines:
+                return "\n".join(lines).strip()
+
+    # 3. Standard Table with Column Headers or Data Rows
+    has_header = False
+    headers = []
+    data_rows = []
+
+    if use_header and num_rows > 1 and is_likely_header_row(grid[0]):
+        has_header = True
         raw_headers = grid[0]
         data_rows = grid[1:]
-        
-        headers = []
         for col_idx in range(num_cols):
-            h_text = raw_headers[col_idx] if col_idx < len(raw_headers) and raw_headers[col_idx] else f"Cột {col_idx+1}"
+            h_text = clean_text_string(raw_headers[col_idx]) if col_idx < len(raw_headers) else ""
+            if is_bullet_marker(h_text) or h_text in ['-', '--', '---']:
+                h_text = ""
             headers.append(h_text)
-            
-        for idx, row in enumerate(data_rows, 1):
-            row_parts = []
-            seen_keys = set()
-            for col_idx in range(num_cols):
-                h_name = headers[col_idx]
-                c_val = row[col_idx] if col_idx < len(row) else ""
-                
-                pair_key = (h_name, c_val)
-                if pair_key in seen_keys and len(row_parts) > 0:
-                    continue
-                seen_keys.add(pair_key)
+    else:
+        data_rows = grid
 
-                if c_val:
-                    row_parts.append(f"{h_name}: {c_val}")
-                else:
-                    row_parts.append(f"{h_name}")
+    for idx, row in enumerate(data_rows, 1):
+        row_parts = []
+        seen_parts = set()
+        for col_idx in range(num_cols):
+            c_val = clean_text_string(row[col_idx]) if col_idx < len(row) else ""
+            if not c_val:
+                continue
+
+            h_name = headers[col_idx] if (has_header and col_idx < len(headers)) else ""
+
+            # If no header exists and c_val is just a bullet/dash marker like '-' or '•', skip it
+            if not h_name and is_bullet_marker(c_val):
+                continue
+
+            if h_name:
+                part = f"{h_name}: {c_val}"
+            else:
+                part = c_val
+
+            if part in seen_parts:
+                continue
+            seen_parts.add(part)
+            row_parts.append(part)
+
+        if row_parts:
             line = separator.join(row_parts)
             if show_row_indices:
                 lines.append(f"--- Dòng {idx} ---")
-            lines.append(prefix_str + line)
-    else:
-        for row_idx, row in enumerate(grid, 1):
-            row_parts = []
-            for col_idx in range(num_cols):
-                h_name = f"Cột {col_idx+1}"
-                c_val = row[col_idx] if col_idx < len(row) else ""
-                if c_val:
-                    row_parts.append(f"{h_name}: {c_val}")
-                else:
-                    row_parts.append(f"{h_name}")
-            line = separator.join(row_parts)
-            if show_row_indices:
-                lines.append(f"--- Dòng {row_idx} ---")
             lines.append(prefix_str + line)
 
     return "\n".join(lines).strip()
@@ -265,17 +371,32 @@ def replace_table_inplace(doc: docx.Document, table: Table, text_content: str):
 
     parent_elm.remove(tbl_elm)
 
+def has_drawing(p: Paragraph) -> bool:
+    """
+    Checks if a paragraph contains image/drawing/shape XML elements.
+    """
+    xml = p._element.xml
+    return ('w:drawing' in xml) or ('w:pict' in xml)
+
 def cleanup_document_blank_spaces(doc: docx.Document):
     """
-    Scans document to eliminate consecutive empty paragraphs and normalize excessive paragraph spacing.
-    Ensures absolute zero weird blank spacing gaps throughout the document.
+    Scans document to eliminate consecutive empty paragraphs, clean strange/invisible characters,
+    and normalize excessive paragraph spacing while PRESERVING 100% of images and drawings.
     """
     paragraphs = list(doc.paragraphs)
     consecutive_empty = 0
 
     for p in paragraphs:
-        text = p.text.strip()
-        if not text:
+        if has_drawing(p):
+            consecutive_empty = 0
+            continue
+
+        raw = p.text
+        cleaned = clean_text_string(raw)
+        if cleaned != raw:
+            p.text = cleaned
+
+        if not cleaned:
             consecutive_empty += 1
             if consecutive_empty > 1:
                 p_elm = p._element
