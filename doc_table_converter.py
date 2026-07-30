@@ -93,14 +93,16 @@ def get_table_text_grid(table: Table) -> list[list[str]]:
 
 def is_bullet_marker(text: str) -> bool:
     """
-    Checks if a text string is a bullet/numbered list marker or dash/punct rather than a table header.
+    Checks if a text string is a bullet/numbered list marker or dash/punct rather than a table value/header.
+    Plain numbers like '0', '1', '2' inside data cells are NOT bullet markers.
+    Only numbers with dots/parens like '1.', '(1)' are list markers.
     """
     s = text.strip().lower()
     if not s or s in ['•', '▪', '*', '-', '+', '–', '—', '(v)', '(i)', '(ii)', '(iii)', '(iv)', 'a.', 'b.', 'c.', 'd.']:
         return True
     if re.match(r'^[-—–\.\*\•\+\s]+$', s):
         return True
-    if re.match(r'^(\([a-z0-9ivxlcdm]+\)|[a-z0-9]\.|[0-9]+(\.[0-9]+)*\.?|\([0-9]+\))$', s, re.IGNORECASE):
+    if re.match(r'^(\([a-z0-9ivxlcdm]+\)|[a-z0-9]+\.|\([0-9]+\))$', s, re.IGNORECASE):
         return True
     return False
 
@@ -146,8 +148,8 @@ def is_likely_header_row(row: list[str]) -> bool:
     """
     if not row or not any(row):
         return False
-    # If any cell is extremely long (>80 chars), unlikely to be column headers
-    if any(len(c) > 80 for c in row if c):
+    # Allow descriptive Vietnamese column header cells up to 250 chars
+    if any(len(c) > 250 for c in row if c):
         return False
     first = row[0].strip()
     # If first cell is a section code like 3.1, 3.2, 3.16
@@ -196,7 +198,27 @@ def format_table_to_dash_text(grid: list[list[str]], separator: str = " | ", use
                 return "\n".join(lines).strip()
 
     # 2. Special handling for Vertical Scenario Matrix Tables (Col 0 contains row attribute keys across N scenario cols)
-    col0_is_labels = (num_cols > 1 and num_rows > 1)
+    # Key insight: If ANY row has merged cells (identical values across cols 1..N), this is a vertical matrix
+    # even if is_likely_header_row returns True. Merged cells are the definitive signal for scenario matrices.
+    # Standard header tables (e.g. Fund table) have DIFFERENT values in each header column.
+    has_any_merged_row = False
+    if num_cols > 2 and num_rows > 1:
+        for r in grid:
+            if len(r) > 2:
+                val1 = clean_text_string(r[1]) if len(r) > 1 else ""
+                if val1:  # Only check non-empty rows
+                    all_same = True
+                    for c_i in range(2, min(len(r), num_cols)):
+                        val_c = clean_text_string(r[c_i])
+                        if val_c != val1:
+                            all_same = False
+                            break
+                    if all_same:
+                        has_any_merged_row = True
+                        break
+
+    is_header_r0 = is_likely_header_row(grid[0])
+    col0_is_labels = (num_cols > 1 and num_rows > 1 and (not is_header_r0 or has_any_merged_row))
     if col0_is_labels:
         for r in grid:
             val0 = clean_text_string(r[0]) if len(r) > 0 else ""
