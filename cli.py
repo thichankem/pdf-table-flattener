@@ -40,8 +40,9 @@ def main() -> int:
     parser.add_argument(
         "--llm",
         action="store_true",
-        help="Bật bước tinh chỉnh câu chữ bằng LLM (Ollama). Kết quả chỉ được "
-        "dùng nếu không làm mất/thêm bất kỳ từ nào.",
+        help="Dùng LLM (Ollama) để đoán cấu trúc bảng (dòng tiêu đề / cột nhãn) "
+        "và tinh chỉnh câu chữ. LLM không sinh nội dung: câu trả lời bị bỏ nếu "
+        "sai định dạng, làm mất hoặc thêm bất kỳ từ nào.",
     )
     parser.add_argument(
         "--no-verify", action="store_true", help="Bỏ qua bước tự kiểm tra 3 tiêu chí"

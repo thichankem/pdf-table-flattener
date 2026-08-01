@@ -43,6 +43,12 @@ class PDFPatcher:
         patches_by_page: Dict[int, List[Dict[str, Any]]],
         pages_without_tables: Set[int],
     ) -> Dict[str, Any]:
+        # Font xrefs are per-document; carrying them over from a previous file
+        # would rewrite an unrelated font's ToUnicode map.
+        self._charsets.clear()
+        self._fonts.clear()
+        self._font_xrefs.clear()
+
         src = fitz.open(pdf_path)
         out = fitz.open()
         stats = {"spill_pages": 0, "shrunk_tables": 0}

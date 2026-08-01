@@ -4,6 +4,9 @@ import fitz
 
 from pdf_table_tool.formatter import (
     TableFormatter,
+    _record_columns,
+    detect_structure,
+    normalise_sliced_cells,
     _header_for,
     _is_fake_header,
     _label,
@@ -193,3 +196,197 @@ def test_fit_plan_reports_overflow_instead_of_silently_clipping():
     size, wrapped, n_fit = fit_plan(lines, font, 300.0, 60.0, [9.0, 8.0, 7.0], 1.32)
     assert n_fit < len(wrapped)      # overflow detected, not hidden
     assert size == 7.0               # smallest size was tried first
+
+
+# -------------------------------------------------------------- structure
+def _line(text, x0, x1, top, bottom):
+    return CellLine(text, x0=x0, x1=x1, top=top, bottom=bottom)
+
+
+def _row_header_grid():
+    """The layout from the LPBank fee table:
+
+        | Điều kiện          | one sentence spanning both columns |
+        | Tình huống         | Thỏa điều kiện | Không thỏa điều kiện |
+        | Thứ tự phân bổ phí | Đóng cho A     | Đóng cho B           |
+    """
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 100, 30), [_line("Điều kiện", 2, 60, 5, 15)]),
+        GridCell(0, 1, 1, 2, (100, 0, 400, 30),
+                 [_line("Khoản phí đóng vào có thể đủ để duy trì hiệu lực của Hợp "
+                        "đồng bảo hiểm", 102, 398, 5, 15)]),
+        GridCell(1, 0, 1, 1, (0, 30, 100, 50), [_line("Tình huống", 2, 62, 34, 44)]),
+        GridCell(1, 1, 1, 1, (100, 30, 250, 50),
+                 [_line("Thỏa điều kiện", 102, 190, 34, 44)]),
+        GridCell(1, 2, 1, 1, (250, 30, 400, 50),
+                 [_line("Không thỏa điều kiện", 252, 370, 34, 44)]),
+        GridCell(2, 0, 1, 1, (0, 50, 100, 70),
+                 [_line("Thứ tự phân bổ phí", 2, 90, 54, 64)]),
+        GridCell(2, 1, 1, 1, (100, 50, 250, 70),
+                 [_line("Đóng cho Phí bảo hiểm định kỳ", 102, 240, 54, 64)]),
+        GridCell(2, 2, 1, 1, (250, 50, 400, 70),
+                 [_line("Đóng cho Phí bảo hiểm cơ bản", 252, 390, 54, 64)]),
+    ]
+    return Grid(n_rows=3, n_cols=3, cells=cells, bbox=(0, 0, 400, 70))
+
+
+def test_row_header_table_is_not_mistaken_for_a_column_header():
+    """Row 0 merges the columns that row 1 keeps apart, so it cannot be a header."""
+    structure = detect_structure(_row_header_grid())
+    assert structure.header_rows == 0
+    assert structure.label_column is True
+
+
+def test_two_dimensional_table_is_pivoted_into_one_bullet_per_case():
+    """Each data column is one case and carries every label down column 0."""
+    lines, _ = TableFormatter().format_grid(_row_header_grid())
+    assert len(lines) == 2
+    assert lines[0] == (
+        "- Điều kiện: Khoản phí đóng vào có thể đủ để duy trì hiệu lực của "
+        "Hợp đồng bảo hiểm"
+        "  |  Tình huống: Thỏa điều kiện"
+        "  |  Thứ tự phân bổ phí: Đóng cho Phí bảo hiểm định kỳ"
+    )
+    assert lines[1] == (
+        "- Điều kiện: Khoản phí đóng vào có thể đủ để duy trì hiệu lực của "
+        "Hợp đồng bảo hiểm"
+        "  |  Tình huống: Không thỏa điều kiện"
+        "  |  Thứ tự phân bổ phí: Đóng cho Phí bảo hiểm cơ bản"
+    )
+
+
+def test_single_data_column_is_never_pivoted():
+    """Pivoting needs at least two data columns; otherwise read row by row."""
+    rows = [
+        [
+            GridCell(0, 0, 1, 1, (0, 0, 100, 20), [_line("Tên", 2, 30, 5, 15)]),
+            GridCell(0, 1, 1, 1, (100, 0, 400, 20), [_line("Nguyễn Văn A", 102, 200, 5, 15)]),
+        ],
+        [
+            GridCell(1, 0, 1, 1, (0, 20, 100, 40), [_line("Chức vụ", 2, 60, 25, 35)]),
+            GridCell(1, 1, 1, 1, (100, 20, 400, 40), [_line("Chuyên viên", 102, 190, 25, 35)]),
+        ],
+    ]
+    assert _record_columns(rows) == [1]
+
+
+def test_vertically_merged_value_repeats_on_every_row_it_covers():
+    """A cell merged down the side applies to each of those rows."""
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 100, 20), [_line("Năm", 2, 40, 5, 15)]),
+        GridCell(0, 1, 1, 1, (100, 0, 250, 20), [_line("Cơ bản", 102, 160, 5, 15)]),
+        GridCell(0, 2, 1, 1, (250, 0, 400, 20), [_line("Đóng thêm", 252, 330, 5, 15)]),
+        GridCell(1, 0, 1, 1, (0, 20, 100, 40), [_line("1", 2, 12, 25, 35)]),
+        GridCell(1, 1, 1, 1, (100, 20, 250, 40), [_line("50%", 102, 140, 25, 35)]),
+        GridCell(1, 2, 3, 1, (250, 20, 400, 80), [_line("1,5%", 252, 300, 45, 55)]),
+        GridCell(2, 0, 1, 1, (0, 40, 100, 60), [_line("2", 2, 12, 45, 55)]),
+        GridCell(2, 1, 1, 1, (100, 40, 250, 60), [_line("30%", 102, 140, 45, 55)]),
+        GridCell(3, 0, 1, 1, (0, 60, 100, 80), [_line("3", 2, 12, 65, 75)]),
+        GridCell(3, 1, 1, 1, (100, 60, 250, 80), [_line("20%", 102, 140, 65, 75)]),
+    ]
+    grid = Grid(n_rows=4, n_cols=3, cells=cells, bbox=(0, 0, 400, 80))
+    lines, _ = TableFormatter().format_grid(grid)
+    assert lines == [
+        "- Năm: 1  |  Cơ bản: 50%  |  Đóng thêm: 1,5%",
+        "- Năm: 2  |  Cơ bản: 30%  |  Đóng thêm: 1,5%",
+        "- Năm: 3  |  Cơ bản: 20%  |  Đóng thêm: 1,5%",
+    ]
+
+
+def test_paragraph_sliced_by_stray_rulings_is_rejoined():
+    """Three stacked one-line cells in one column are one paragraph."""
+    cells = [
+        GridCell(0, 0, 3, 1, (0, 0, 80, 60), [_line("Điều kiện", 2, 50, 20, 30)]),
+        GridCell(0, 1, 1, 1, (80, 0, 400, 20),
+                 [_line("Khoản phí đóng vào có thể đủ để duy trì", 82, 398, 5, 15)]),
+        GridCell(1, 1, 1, 1, (80, 20, 400, 40),
+                 [_line("hiệu lực của Hợp đồng bảo hiểm đến hết", 82, 398, 25, 35)]),
+        GridCell(2, 1, 1, 1, (80, 40, 400, 60),
+                 [_line("ngày liền trước Ngày đến hạn.", 82, 250, 45, 55)]),
+    ]
+    grid = Grid(n_rows=3, n_cols=2, cells=cells, bbox=(0, 0, 400, 60))
+    fused = normalise_sliced_cells(grid)
+    assert len(fused.cells) == 2
+    lines, _ = TableFormatter().format_grid(grid)
+    assert len(lines) == 1
+    assert lines[0].startswith("- Điều kiện")
+    # The three slices read as one sentence again, in order.
+    assert "duy trì hiệu lực của Hợp đồng bảo hiểm đến hết ngày liền trước" in lines[0]
+    assert lines[0].endswith("Ngày đến hạn.")
+
+
+def test_rowspan_group_keeps_its_separate_rows():
+    """"Nhóm A" spanning three rows must not swallow them into one bullet."""
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 80, 20), [_line("Nhóm", 2, 40, 5, 15)]),
+        GridCell(0, 1, 1, 1, (80, 0, 200, 20), [_line("Hạng", 82, 120, 5, 15)]),
+        GridCell(0, 2, 1, 1, (200, 0, 400, 20), [_line("HMTC", 202, 250, 5, 15)]),
+        GridCell(1, 0, 3, 1, (0, 20, 80, 80), [_line("Nhóm A", 2, 50, 40, 50)]),
+        GridCell(1, 1, 1, 1, (80, 20, 200, 40), [_line("I", 82, 90, 25, 35)]),
+        GridCell(1, 2, 1, 1, (200, 20, 400, 40), [_line("1.000", 202, 250, 25, 35)]),
+        GridCell(2, 1, 1, 1, (80, 40, 200, 60), [_line("II", 82, 92, 45, 55)]),
+        GridCell(2, 2, 1, 1, (200, 40, 400, 60), [_line("700", 202, 240, 45, 55)]),
+        GridCell(3, 1, 1, 1, (80, 60, 200, 80), [_line("III", 82, 95, 65, 75)]),
+        GridCell(3, 2, 1, 1, (200, 60, 400, 80), [_line("200", 202, 240, 65, 75)]),
+    ]
+    grid = Grid(n_rows=4, n_cols=3, cells=cells, bbox=(0, 0, 400, 80))
+    assert len(normalise_sliced_cells(grid).cells) == len(cells)
+    lines, _ = TableFormatter().format_grid(grid)
+    assert len(lines) == 3
+    assert "1.000" in lines[0] and "700" in lines[1] and "200" in lines[2]
+
+
+def test_column_header_table_is_still_detected():
+    grid = Grid(
+        n_rows=2, n_cols=2,
+        cells=[
+            GridCell(0, 0, 1, 1, (0, 0, 100, 20), [_line("Khoản", 2, 40, 5, 15)]),
+            GridCell(0, 1, 1, 1, (100, 0, 400, 20), [_line("Quy định", 102, 160, 5, 15)]),
+            GridCell(1, 0, 1, 1, (0, 20, 100, 40), [_line("3.1", 2, 20, 25, 35)]),
+            GridCell(1, 1, 1, 1, (100, 20, 400, 40), [_line("Nội dung", 102, 170, 25, 35)]),
+        ],
+        bbox=(0, 0, 400, 40),
+    )
+    structure = detect_structure(grid)
+    assert structure.header_rows == 1
+    lines, _ = TableFormatter().format_grid(grid)
+    assert lines == ["- Khoản: 3.1  |  Quy định: Nội dung"]
+
+
+def test_continuation_cell_at_top_of_page_is_not_a_header():
+    """A cell carried over from the previous page fills one column, not a row."""
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 80, 20), []),
+        GridCell(0, 1, 1, 1, (80, 0, 200, 20), []),
+        GridCell(0, 2, 1, 1, (200, 0, 400, 20),
+                 [_line("năm/lần ĐVKD thực hiện đánh giá lại hạn mức.", 202, 390, 5, 15)]),
+        GridCell(1, 0, 1, 1, (0, 20, 80, 40), [_line("3.8", 2, 25, 25, 35)]),
+        GridCell(1, 1, 1, 1, (80, 20, 200, 40), [_line("Giải ngân", 82, 140, 25, 35)]),
+        GridCell(1, 2, 1, 1, (200, 20, 400, 40), [_line("Chuyển khoản", 202, 280, 25, 35)]),
+        GridCell(2, 0, 1, 1, (0, 40, 80, 60), [_line("3.9", 2, 25, 45, 55)]),
+        GridCell(2, 1, 1, 1, (80, 40, 200, 60), [_line("Trả nợ", 82, 130, 45, 55)]),
+        GridCell(2, 2, 1, 1, (200, 40, 400, 60), [_line("Hàng tháng", 202, 270, 45, 55)]),
+    ]
+    grid = Grid(n_rows=3, n_cols=3, cells=cells, bbox=(0, 0, 400, 60))
+    assert detect_structure(grid).header_rows == 0
+    lines, _ = TableFormatter().format_grid(grid)
+    # The carried-over sentence must not be glued in front of the real rows.
+    assert sum("năm/lần" in line for line in lines) == 1
+    assert lines[-1] == "- 3.9  |  Trả nợ  |  Hàng tháng"
+
+
+def test_header_of_a_multi_part_cell_is_kept_on_the_caption_line():
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 80, 20), [_line("Khoản", 2, 45, 5, 15)]),
+        GridCell(0, 1, 1, 1, (80, 0, 400, 20),
+                 [_line("Nội dung chi tiết", 82, 190, 5, 15)]),
+        GridCell(1, 0, 1, 1, (0, 20, 80, 60), [_line("3.1", 2, 25, 25, 35)]),
+        GridCell(1, 1, 1, 1, (80, 20, 400, 60), [
+            _line("- Điểm thứ nhất.", 82, 200, 25, 35),
+            _line("- Điểm thứ hai.", 82, 195, 40, 50),
+        ]),
+    ]
+    grid = Grid(n_rows=2, n_cols=2, cells=cells, bbox=(0, 0, 400, 60))
+    lines, _ = TableFormatter().format_grid(grid)
+    assert lines[0] == "- Khoản: 3.1  |  Nội dung chi tiết:"
+    assert lines[1:] == ["  - Điểm thứ nhất.", "  - Điểm thứ hai."]

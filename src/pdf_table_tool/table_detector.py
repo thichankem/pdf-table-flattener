@@ -128,6 +128,36 @@ def detect_tables_by_page(
     return pages_with_tables, pages_without_tables
 
 
+def _column_edges(info: TableInfo, tolerance: float = 4.0) -> List[float]:
+    """Distinct vertical rulings of a table, outer borders included."""
+    if info.raw_table is None:
+        return []
+    values = sorted(
+        {round(c[0], 1) for c in info.raw_table.cells}
+        | {round(c[2], 1) for c in info.raw_table.cells}
+    )
+    edges: List[float] = []
+    for v in values:
+        if not edges or v - edges[-1] > tolerance:
+            edges.append(v)
+    return edges
+
+
+def _same_column_grid(a: TableInfo, b: TableInfo, tolerance: float = 4.0) -> bool:
+    """Do two tables share the same column layout?
+
+    Two unrelated tables can both hug the text margins and both sit at the edge
+    of their page, so position alone links tables that have nothing to do with
+    each other -- and the second one then inherits the first one's headers.
+    Matching interior rulings is what actually identifies one table split across
+    a page break.
+    """
+    edges_a, edges_b = _column_edges(a), _column_edges(b)
+    if not edges_a or len(edges_a) != len(edges_b):
+        return False
+    return all(abs(x - y) <= tolerance for x, y in zip(edges_a, edges_b))
+
+
 def _link_multipage_tables(
     pdf: pdfplumber.PDF, pages_with_tables: Dict[int, List[TableInfo]]
 ) -> None:
@@ -156,7 +186,13 @@ def _link_multipage_tables(
         reaches_bottom = last.bbox[3] > curr_h * 0.60
         starts_at_top = first.bbox[1] < next_h * 0.25
 
-        if same_left and same_right and reaches_bottom and starts_at_top:
+        if (
+            same_left
+            and same_right
+            and reaches_bottom
+            and starts_at_top
+            and _same_column_grid(last, first)
+        ):
             first.is_continuation = True
             first.parent_page_num = curr
             logger.info(

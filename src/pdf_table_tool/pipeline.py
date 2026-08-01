@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import pdfplumber
 
 from .config import settings
-from .formatter import TableFormatter
+from .formatter import TableFormatter, detect_structure, normalise_sliced_cells
 from .grid_extractor import build_grid, words_in_bbox
 from .pdf_patcher import PDFPatcher
 from .table_detector import detect_tables_by_page
@@ -23,10 +23,13 @@ class PDFTableFlattenerPipeline:
         self.verify_output = verify_output
         self.use_llm = settings.USE_LLM if use_llm is None else use_llm
         self._refiner = None
+        self._classifier = None
         if self.use_llm:
             from .extractors.llm_reconstructor import LLMBulletRefiner
+            from .extractors.llm_structure import LLMStructureClassifier
 
             self._refiner = LLMBulletRefiner()
+            self._classifier = LLMStructureClassifier()
 
     def process(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
         logger.info("Processing %s", pdf_path)
@@ -53,7 +56,18 @@ class PDFTableFlattenerPipeline:
                         continue
 
                     carry = inherited_headers if info.is_continuation else None
-                    bullet_lines, headers = self.formatter.format_grid(grid, carry)
+
+                    # Geometry decides the layout; the LLM may only correct it.
+                    # Both see the same normalised grid so their row indices
+                    # mean the same thing.
+                    normalised = normalise_sliced_cells(grid)
+                    structure = detect_structure(normalised)
+                    if self._classifier is not None:
+                        structure = self._classifier.classify(normalised, structure)
+
+                    bullet_lines, headers = self.formatter.format_grid(
+                        grid, carry, structure
+                    )
 
                     if self._refiner is not None:
                         bullet_lines = self._refiner.refine(bullet_lines)

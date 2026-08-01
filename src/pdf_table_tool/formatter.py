@@ -20,7 +20,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .grid_extractor import CellLine, Grid, GridCell
 from .text_utils import (
@@ -219,7 +219,7 @@ def _header_band_height(matrix_cells, grid: Grid) -> int:
     present = [c for c in row0 if not c.is_empty]
     if not present:
         return 0
-    if any(is_bullet_line(c.text) for c in present):
+    if any(is_bullet_line(c.text) or len(c.text) > 150 for c in present):
         return 0
     # A row of pure numbers is data, not a header.
     if all(re.fullmatch(r"[\d.,%/\s-]+", c.text.strip()) for c in present):
@@ -227,16 +227,46 @@ def _header_band_height(matrix_cells, grid: Grid) -> int:
     if not _row_can_be_header(matrix_cells, grid, 0):
         return 0
 
-    # A header that wraps onto a second line shows up as extra grid rows, while
-    # the untouched columns keep one cell spanning the whole band.  That
-    # row-span is the reliable signal for how tall the header is.
-    band = max((c.row_span for c in row0), default=1)
-    band = max(1, min(band, grid.n_rows - 1))
+    # A header names every column.  When the first row fills fewer cells than
+    # the rows beneath it, it is not labelling them -- most often it is a cell
+    # continued from the previous page, whose text would otherwise be pasted in
+    # front of every row as a bogus label.
+    widest_data_row = max(
+        (
+            len([c for c in _row_cells(matrix_cells, r, grid.n_cols) if not c.is_empty])
+            for r in range(1, grid.n_rows)
+        ),
+        default=0,
+    )
+    if len(present) < widest_data_row:
+        return 0
 
-    for r in range(1, band):
-        for cell in _row_cells(matrix_cells, r, grid.n_cols):
-            if not cell.is_empty and is_bullet_line(cell.text):
-                return r
+    # A header can occupy two grid rows: its own text wraps in the narrow
+    # columns while the label column keeps one cell spanning the whole band.
+    # Row `r` is still header when both hold:
+    #   * its cells sit only under row-0 cells that do NOT span the band, i.e.
+    #     under headers that had room to wrap;
+    #   * none of them is a bare number -- a numeric row is data, which is what
+    #     tells a wrapped header apart from a rowspan group ("Nhóm A" over
+    #     I / II / III).
+    wrappable = {
+        c.col for c in row0 if c.row_span == 1 and not c.is_empty
+    }
+    band_limit = min(max((c.row_span for c in row0), default=1), 3, grid.n_rows - 1)
+
+    band = 1
+    for r in range(1, band_limit):
+        cells = [c for c in _row_cells(matrix_cells, r, grid.n_cols) if not c.is_empty]
+        if cells:
+            if any(is_bullet_line(c.text) for c in cells):
+                break
+            if any(c.col not in wrappable for c in cells):
+                break
+            if any(re.fullmatch(r"[\d.,%/\s-]+", c.text.strip()) for c in cells):
+                break
+        # An empty row means the header above already covers it -- either as a
+        # blank spanning cell or as a wrapped header the cell normaliser fused.
+        band = r + 1
     return band
 
 
@@ -252,6 +282,10 @@ def _has_label_column(rows: List[List[GridCell]], n_cols: int) -> bool:
             return False
         text = " ".join(row[0].text.split())
         if not text or len(text) > MAX_LABEL_CHARS or is_bullet_line(text):
+            return False
+        # A numbering column ("3.7", "1", "a.") indexes rows, it does not name
+        # them -- prefixing every value with it reads worse than a plain join.
+        if not any(ch.isalpha() for ch in text):
             return False
         if len(row) < 2:
             return False
@@ -288,55 +322,157 @@ def _merge_cells(cells: List[GridCell]) -> GridCell:
     )
 
 
+def _fills_column(cell: GridCell) -> bool:
+    """Does this cell's text run all the way to its right edge?
+
+    A full last line means the text was cut off by the column, not by the
+    author -- so whatever sits directly below continues the same sentence.
+    """
+    if not cell.lines:
+        return False
+    width = cell.bbox[2] - cell.bbox[0]
+    if width <= 0:
+        return False
+    return cell.lines[-1].x1 >= cell.bbox[2] - max(10.0, width * 0.08)
+
+
+def normalise_sliced_cells(grid: Grid) -> Grid:
+    """Rejoin cells that are really one paragraph cut apart by stray rulings.
+
+    Word emits faint interior rules inside a merged cell, so pdfplumber reports
+    a single wrapped paragraph as three stacked one-line cells -- and the table
+    then looks like three rows with two of them unlabelled.  Cells are fused
+    when they sit in the same column, touch vertically, and the upper one runs
+    to the column's right edge.
+    """
+    def splits_elsewhere(cell: GridCell, boundary: int) -> bool:
+        """Does another column start a new record across this row boundary?
+
+        If it does, the boundary is a real table row (a rowspan group, or the
+        next numbered item) and the two cells must stay apart.
+        """
+        covered = range(cell.col, cell.col + cell.col_span)
+        for c in range(grid.n_cols):
+            if c in covered:
+                continue
+            ends = any(
+                o.col <= c < o.col + o.col_span
+                and o.row + o.row_span - 1 == boundary
+                and not o.is_empty
+                for o in grid.cells
+            )
+            starts = any(
+                o.col <= c < o.col + o.col_span
+                and o.row == boundary + 1
+                and not o.is_empty
+                for o in grid.cells
+            )
+            if ends and starts:
+                return True
+        return False
+
+    by_column: Dict[Tuple[int, int], List[GridCell]] = {}
+    for cell in grid.cells:
+        by_column.setdefault((cell.col, cell.col_span), []).append(cell)
+
+    kept: List[GridCell] = []
+    for cells in by_column.values():
+        cells.sort(key=lambda c: c.row)
+        run: List[GridCell] = []
+        for cell in cells:
+            if run:
+                prev = run[-1]
+                boundary = prev.row + prev.row_span - 1
+                touching = abs(prev.bbox[3] - cell.bbox[1]) <= 3.0
+                if (
+                    touching
+                    and _fills_column(prev)
+                    and not splits_elsewhere(prev, boundary)
+                ):
+                    run.append(cell)
+                    continue
+                kept.append(_merge_cells(run) if len(run) > 1 else run[0])
+                run = []
+            run.append(cell)
+        if run:
+            kept.append(_merge_cells(run) if len(run) > 1 else run[0])
+
+    kept.sort(key=lambda c: (c.row, c.col))
+    return Grid(n_rows=grid.n_rows, n_cols=grid.n_cols, cells=kept, bbox=grid.bbox)
+
+
 def _logical_rows(
     grid: Grid, matrix_cells, first_data_row: int
 ) -> List[List[GridCell]]:
     """Group grid rows into the rows a reader actually sees.
 
-    Word writes a long paragraph inside a merged cell as several one-line cells,
-    so pdfplumber reports three "rows" where the document shows one.  A grid row
-    continues the previous one when a cell from another column spans across the
-    boundary *and* both rows put all their text in the same single column -- if
-    two columns are populated the boundary separates genuine records (a rowspan
-    group like "Nhóm A: I / II / III") and must be kept.
+    A boundary between two grid rows is real only when some column has one cell
+    ending above it and another starting below it.  A merged cell spanning the
+    boundary is not enough on its own: in a rowspan group ("Nhóm A" covering
+    I / II / III) the other columns do split, and those are genuine rows.
     """
-    def spans_boundary(above: int, below: int) -> bool:
-        return any(
-            cell.row <= above and below < cell.row + cell.row_span
-            for cell in grid.cells
-        )
-
-    merged: List[List[GridCell]] = []
-    last_raw_row = -1
-    for r in range(first_data_row, grid.n_rows):
-        row = [
-            matrix_cells[(r, c)]
-            for c in range(grid.n_cols)
-            if (r, c) in matrix_cells and not matrix_cells[(r, c)].is_empty
-        ]
-        if not row:
-            continue
-
-        if merged and len(row) == 1 and spans_boundary(last_raw_row, r):
-            target = next(
-                (c for c in merged[-1] if c.col == row[0].col), None
+    def is_real_boundary(above: int) -> bool:
+        for c in range(grid.n_cols):
+            ends_above = any(
+                cell.col <= c < cell.col + cell.col_span
+                and cell.row + cell.row_span - 1 == above
+                and not cell.is_empty
+                for cell in grid.cells
             )
-            if target is not None:
-                merged[-1] = [
-                    _merge_cells([c, row[0]]) if c is target else c
-                    for c in merged[-1]
-                ]
-                last_raw_row = r
-                continue
+            starts_below = any(
+                cell.col <= c < cell.col + cell.col_span
+                and cell.row == above + 1
+                and not cell.is_empty
+                for cell in grid.cells
+            )
+            if ends_above and starts_below:
+                return True
+        return False
 
-        merged.append(row)
-        last_raw_row = r
-    return merged
+    groups: List[List[int]] = []
+    for r in range(first_data_row, grid.n_rows):
+        if groups and not is_real_boundary(r - 1):
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+
+    rows: List[List[GridCell]] = []
+    for group in groups:
+        lo, hi = group[0], group[-1]
+        # A cell is part of every row its rowspan covers, so a value merged down
+        # the side of a table ("1,5%" against six years) belongs to each of
+        # those rows instead of only the first.
+        cells = [
+            cell
+            for cell in grid.cells
+            if not cell.is_empty
+            and cell.row >= first_data_row
+            and cell.row <= hi
+            and cell.row + cell.row_span - 1 >= lo
+        ]
+        if cells:
+            rows.append(sorted(cells, key=lambda c: (c.col, c.row)))
+    return rows
+
+
+def _record_columns(rows: List[List[GridCell]]) -> List[int]:
+    """Data columns that each stand for one record in a two-dimensional table.
+
+    Taken from the row that splits into the most cells, so a label row that
+    merges the data columns together does not hide the split.
+    """
+    best: List[int] = []
+    for row in rows:
+        anchors = sorted({c.col for c in row if c.col > 0})
+        if len(anchors) > len(best):
+            best = anchors
+    return best
 
 
 def detect_structure(grid: Grid, matrix_cells=None) -> TableStructure:
     """Work out a table's orientation from its geometry."""
     if matrix_cells is None:
+        grid = normalise_sliced_cells(grid)
         matrix_cells = {(c.row, c.col): c for c in grid.cells}
     header_rows = _header_band_height(matrix_cells, grid)
     rows = _logical_rows(grid, matrix_cells, header_rows)
@@ -360,6 +496,8 @@ class TableFormatter:
         `structure` overrides the geometric layout analysis -- that is the hook
         the optional LLM classifier plugs into.
         """
+        original = grid
+        grid = normalise_sliced_cells(grid)
         matrix_cells = {(c.row, c.col): c for c in grid.cells}
         if structure is None:
             structure = detect_structure(grid, matrix_cells)
@@ -374,14 +512,25 @@ class TableFormatter:
             h.strip() for h in headers[1:]
         )
 
+        rows = _logical_rows(grid, matrix_cells, first_data_row)
+
         lines: List[str] = []
-        for row_cells in _logical_rows(grid, matrix_cells, first_data_row):
-            lines.extend(self._render_row(row_cells, headers, label_column))
+        record_cols = _record_columns(rows) if label_column else []
+        if len(record_cols) >= 2:
+            # Two-dimensional table: the labels run down the side and each data
+            # column is one record.  Reading it row by row would scatter a
+            # single case across several bullets, so pivot instead.
+            lines = self._render_pivoted(rows, record_cols)
+        else:
+            for row_cells in rows:
+                lines.extend(self._render_row(row_cells, headers, label_column))
 
         if not lines and any(h.strip() for h in headers):
             lines.append("- " + SEPARATOR.join(h for h in headers if h.strip()))
 
-        lines = _completeness_guard(grid, lines, first_data_row, headers)
+        # Guard against the *original* grid so a bug in cell normalisation can
+        # never make text disappear.
+        lines = _completeness_guard(original, lines, first_data_row, headers)
         return collapse_blank_lines(lines), headers
 
     # -- headers ---------------------------------------------------------
@@ -415,6 +564,60 @@ class TableFormatter:
                         headers[c + extra] = headers[c]
 
         return headers, band
+
+    # -- pivoted (two-dimensional) tables ---------------------------------
+    def _render_pivoted(
+        self, rows: List[List[GridCell]], record_cols: List[int]
+    ) -> List[str]:
+        """One bullet per data column, captioned by the labels down column 0.
+
+            | Điều kiện          | applies to both columns          |
+            | Tình huống         | Thỏa điều kiện | Không thỏa      |
+            | Thứ tự phân bổ phí | Đóng cho A     | Đóng cho B      |
+
+        becomes one bullet for "Thỏa điều kiện" and one for "Không thỏa", each
+        carrying every label -- which is how the table reads on the page.
+        """
+        out: List[str] = []
+        for col in record_cols:
+            parts: List[str] = []
+            trailing: List[str] = []
+            for row in rows:
+                # Go through cell_to_items so a label wrapped across lines
+                # ("Thứ tự" / "phân bổ phí") is rejoined with its space.
+                label = ""
+                if row[0].col == 0:
+                    label_items = cell_to_items(row[0])
+                    if label_items:
+                        label = label_items[0].text.rstrip(":").strip()
+                cell = next(
+                    (
+                        c
+                        for c in row
+                        if c.col > 0 and c.col <= col < c.col + max(1, c.col_span)
+                    ),
+                    None,
+                )
+                if cell is None:
+                    continue
+                items = cell_to_items(cell)
+                if not items:
+                    continue
+                if _is_simple(items):
+                    parts.append(_label(label, items[0].text))
+                else:
+                    parts.append(f"{label}:" if label else "")
+                    for item in items:
+                        level = 1 + item.level
+                        marker = _normalize_marker(item.marker) or LEVEL_MARKERS[
+                            min(level, len(LEVEL_MARKERS) - 1)
+                        ]
+                        trailing.append(f"{INDENT_UNIT * level}{marker} {item.text}")
+            parts = [p for p in parts if p]
+            if parts:
+                out.append("- " + SEPARATOR.join(parts))
+            out.extend(trailing)
+        return out
 
     # -- rows ------------------------------------------------------------
     def _render_row(
@@ -461,6 +664,17 @@ class TableFormatter:
             if head_parts:
                 out.append("- " + SEPARATOR.join(head_parts))
             return out
+
+        # A multi-part cell still has a column header, and it has to appear
+        # somewhere -- announce it on the caption line rather than losing it.
+        captions = []
+        for cell, _items in complex_cells:
+            header = _header_for(cell, headers).rstrip(":").strip()
+            if header and not _is_fake_header(header) and header not in captions:
+                captions.append(header)
+        if head_parts and captions:
+            head_parts.append(f"{captions[0]}:" if len(captions) == 1
+                              else SEPARATOR.join(f"{c}:" for c in captions))
 
         if head_parts:
             out.append("- " + SEPARATOR.join(head_parts))
