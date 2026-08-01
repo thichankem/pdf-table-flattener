@@ -22,7 +22,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .grid_extractor import CellLine, Grid, GridCell
+from .grid_extractor import CellLine, Grid, GridCell, Item
 from .text_utils import (
     bullet_marker,
     collapse_blank_lines,
@@ -41,15 +41,6 @@ LEVEL_MARKERS = ["-", "+", "*"]
 _FAKE_HEADER_RE = re.compile(
     r"^(cột|cot|column|col|field|trường|unnamed|no\.?|#)\s*\d*$", re.IGNORECASE
 )
-
-
-@dataclass
-class Item:
-    """One logical bullet inside a cell."""
-
-    level: int
-    text: str
-    marker: str = ""
 
 
 @dataclass
@@ -81,7 +72,14 @@ def cell_to_items(cell: GridCell) -> List[Item]:
 
     Nesting comes from the x-position of the bullet glyphs, not from guessing at
     the glyph itself, so documents that use ``-``/``+``/``•`` in any order work.
+
+    A cell that already carries its items (a .docx paragraph knows its own list
+    level) skips the inference entirely -- guessing at synthetic geometry would
+    only be able to get it wrong.
     """
+    if cell.items is not None:
+        return list(cell.items)
+
     lines = [ln for ln in cell.lines if ln.text.strip()]
     if not lines:
         return []
@@ -311,6 +309,9 @@ def _merge_cells(cells: List[GridCell]) -> GridCell:
     merged_lines: List[CellLine] = []
     for cell in cells:
         merged_lines.extend(cell.lines)
+    merged_items: Optional[List[Item]] = None
+    if any(c.items is not None for c in cells):
+        merged_items = [item for c in cells for item in (c.items or [])]
     return GridCell(
         row=first.row,
         col=first.col,
@@ -323,6 +324,7 @@ def _merge_cells(cells: List[GridCell]) -> GridCell:
             max(c.bbox[3] for c in cells),
         ),
         lines=merged_lines,
+        items=merged_items,
     )
 
 

@@ -9,7 +9,9 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-from src.pdf_table_tool.pipeline import PDFTableFlattenerPipeline
+from src.pdf_table_tool.pipeline import SUPPORTED_SUFFIXES, PDFTableFlattenerPipeline
+
+OUTPUT_DIR_NAME = "output_flattened"
 
 
 def setup_logging(verbose: bool) -> None:
@@ -22,7 +24,8 @@ def setup_logging(verbose: bool) -> None:
 
 def _report(summary: dict) -> bool:
     print(f"  bảng đã làm phẳng : {summary['total_tables_flattened']}")
-    print(f"  trang giữ nguyên  : {summary['pages_passthrough_count']}")
+    if "pages_passthrough_count" in summary:
+        print(f"  trang giữ nguyên  : {summary['pages_passthrough_count']}")
     if summary.get("continuation_pages_added"):
         print(f"  trang bổ sung     : {summary['continuation_pages_added']}")
     report = summary.get("verification")
@@ -33,10 +36,12 @@ def _report(summary: dict) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Làm phẳng mọi bảng trong PDF thành gạch đầu dòng."
+        description="Làm phẳng mọi bảng trong PDF hoặc Word thành gạch đầu dòng."
     )
-    parser.add_argument("-i", "--input", required=True, help="File PDF hoặc thư mục")
-    parser.add_argument("-o", "--output", help="File PDF hoặc thư mục đầu ra")
+    parser.add_argument(
+        "-i", "--input", required=True, help="File PDF/DOCX hoặc thư mục"
+    )
+    parser.add_argument("-o", "--output", help="File hoặc thư mục đầu ra")
     parser.add_argument(
         "--llm",
         action="store_true",
@@ -62,27 +67,39 @@ def main() -> int:
     )
 
     if input_path.is_file():
-        if input_path.suffix.lower() != ".pdf":
-            print(f"Lỗi: '{args.input}' không phải file PDF.")
+        if input_path.suffix.lower() not in SUPPORTED_SUFFIXES:
+            print(f"Lỗi: '{args.input}' không phải file PDF hoặc DOCX.")
             return 1
-        out_path = args.output or str(
-            input_path.parent / f"{input_path.stem}_flattened.pdf"
+        # The output keeps the input's name, so without -o it has to land in its
+        # own folder -- writing next to the input would overwrite it.
+        out_path = Path(args.output) if args.output else (
+            input_path.parent / OUTPUT_DIR_NAME / input_path.name
         )
+        if out_path.resolve() == input_path.resolve():
+            print("Lỗi: file đầu ra trùng với file đầu vào.")
+            return 1
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Đang xử lý: {input_path.name} -> {out_path}")
-        return 0 if _report(pipeline.process(str(input_path), out_path)) else 2
+        return 0 if _report(pipeline.process(str(input_path), str(out_path))) else 2
 
-    out_dir = Path(args.output) if args.output else input_path / "output_flattened"
+    out_dir = Path(args.output) if args.output else input_path / OUTPUT_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pdf_files = sorted(input_path.glob("*.pdf"))
-    print(f"Tìm thấy {len(pdf_files)} file PDF trong '{input_path}'")
+    files = sorted(
+        f
+        for f in input_path.iterdir()
+        if f.is_file()
+        and f.suffix.lower() in SUPPORTED_SUFFIXES
+        and not f.name.startswith("~$")
+    )
+    print(f"Tìm thấy {len(files)} file PDF/DOCX trong '{input_path}'")
 
     failures = 0
-    for pdf_file in pdf_files:
-        out_file = out_dir / f"{pdf_file.stem}_flattened.pdf"
-        print(f"\n{pdf_file.name}")
+    for src_file in files:
+        out_file = out_dir / src_file.name
+        print(f"\n{src_file.name}")
         try:
-            if not _report(pipeline.process(str(pdf_file), str(out_file))):
+            if not _report(pipeline.process(str(src_file), str(out_file))):
                 failures += 1
         except Exception as exc:
             failures += 1

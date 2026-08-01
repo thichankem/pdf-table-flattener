@@ -6,9 +6,11 @@ report instead of a silently mangled PDF.
 
 import logging
 import re
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+from xml.etree import ElementTree
 
 import fitz
 import pdfplumber
@@ -82,6 +84,100 @@ class VerificationReport:
             f"      tokens: input={self.input_token_count} output={self.output_token_count}"
         )
         return "\n".join(out)
+
+
+DOCX_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _docx_parts(path: str) -> List[bytes]:
+    """The XML of every story of a .docx: body, headers, footers, footnotes."""
+    with zipfile.ZipFile(path) as archive:
+        return [
+            archive.read(name)
+            for name in archive.namelist()
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and (
+                name == "word/document.xml"
+                or any(
+                    name.startswith(f"word/{kind}")
+                    for kind in ("header", "footer", "footnotes", "endnotes")
+                )
+            )
+        ]
+
+
+def _docx_tokens(path: str) -> Counter:
+    """Every content token of a Word file, read straight from its XML.
+
+    Going through the XML rather than python-docx keeps text that lives in
+    hyperlinks, text boxes and content controls in the count, so criterion 1 is
+    checked against everything the reader can actually see.
+    """
+    counter: Counter = Counter()
+    for blob in _docx_parts(path):
+        root = ElementTree.fromstring(blob)
+        for node in root.iter(f"{DOCX_NS}t"):
+            counter.update(tokenize(node.text or ""))
+    return counter
+
+
+def _docx_token_stream(path: str) -> str:
+    """All content characters of a Word file, in reading order, unspaced."""
+    parts: List[str] = []
+    for blob in _docx_parts(path):
+        root = ElementTree.fromstring(blob)
+        for node in root.iter(f"{DOCX_NS}t"):
+            parts.extend(tokenize(node.text or ""))
+    return "".join(parts)
+
+
+def _docx_table_count(path: str) -> int:
+    return sum(
+        len(ElementTree.fromstring(blob).findall(f".//{DOCX_NS}tbl"))
+        for blob in _docx_parts(path)
+    )
+
+
+def verify_docx(
+    input_path: str,
+    output_path: str,
+    generated_lines: Optional[List[str]] = None,
+) -> VerificationReport:
+    """Check an output .docx against the same three criteria as the PDF path."""
+    report = VerificationReport()
+
+    src_tokens = _docx_tokens(input_path)
+    out_tokens = _docx_tokens(output_path)
+    report.input_token_count = sum(src_tokens.values())
+    report.output_token_count = sum(out_tokens.values())
+
+    # As in the PDF check: a token that only changed shape (rejoined across a
+    # line break) is still present in the output character stream.
+    out_stream = _docx_token_stream(output_path)
+    missing = [
+        tok for tok in (src_tokens - out_tokens).elements() if tok not in out_stream
+    ]
+    if missing:
+        report.missing_tokens[0] = sorted(missing)
+
+    remaining = _docx_table_count(output_path)
+    if remaining:
+        report.residual_table_pages = list(range(1, remaining + 1))
+
+    src_text = " ".join(src_tokens.elements())
+    scope = "\n".join(generated_lines or [])
+    report.fake_labels = sorted(
+        set(FAKE_LABEL_RE.findall(scope)) - set(FAKE_LABEL_RE.findall(src_text))
+    )
+    report.stray_characters = sorted(set(STRAY_CHAR_RE.findall(scope)))
+
+    for idx in range(1, len(generated_lines or [])):
+        if not generated_lines[idx].strip() and not generated_lines[idx - 1].strip():
+            report.double_blank_lines.append(idx)
+            break
+
+    return report
 
 
 def _document_tokens(doc: fitz.Document) -> Counter:

@@ -16,7 +16,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 PROJECT_ROOT = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pdf_table_tool.pipeline import PDFTableFlattenerPipeline
+from src.pdf_table_tool.pipeline import SUPPORTED_SUFFIXES, PDFTableFlattenerPipeline
 
 # Try to import tkinterdnd2 for drag-and-drop support
 try:
@@ -43,6 +43,18 @@ def _parse_drop_data(data: str) -> list[Path]:
             paths.append(parts[0])
             raw = parts[1].strip() if len(parts) > 1 else ""
     return [Path(p) for p in paths]
+
+
+def _is_supported(path: Path) -> bool:
+    """A PDF or Word file -- Word's ``~$`` lock files are not real documents."""
+    return (
+        path.suffix.lower() in SUPPORTED_SUFFIXES
+        and not path.name.startswith("~$")
+    )
+
+
+def _documents_in(directory: Path) -> list[Path]:
+    return sorted(p for p in directory.iterdir() if p.is_file() and _is_supported(p))
 
 
 class PDFFlattenerGUI:
@@ -91,7 +103,7 @@ class PDFFlattenerGUI:
         ttk.Label(header_frame, text="📄 PDF Table Flattener", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             header_frame,
-            text="Tự động làm phẳng toàn bộ bảng trong file PDF thành dạng gạch đầu dòng (bullet points).",
+            text="Tự động làm phẳng toàn bộ bảng trong file PDF / Word thành dạng gạch đầu dòng (bullet points).",
             style="SubHeader.TLabel"
         ).pack(anchor=tk.W, pady=(1, 0))
 
@@ -99,7 +111,7 @@ class PDFFlattenerGUI:
         toolbar = ttk.Frame(main_frame)
         toolbar.pack(fill=tk.X, pady=(0, 6))
 
-        ttk.Button(toolbar, text="➕ Chọn File PDF...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="➕ Chọn File PDF / Word...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="📂 Chọn Thư Mục...", command=self.add_directory).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="🗑️ Xóa Danh Sách", command=self.clear_files).pack(side=tk.LEFT)
 
@@ -122,7 +134,7 @@ class PDFFlattenerGUI:
 
             tk.Label(
                 drop_inner,
-                text="🗂️  Kéo & thả file PDF hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
+                text="🗂️  Kéo & thả file PDF / Word hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
                 bg="#eff6ff",
                 fg="#2563eb",
                 font=tkFont.Font(family="Segoe UI", size=9, weight="bold"),
@@ -134,7 +146,7 @@ class PDFFlattenerGUI:
 
         columns = ("name", "size", "status")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended")
-        self.tree.heading("name",   text="Tên File PDF",  anchor=tk.W)
+        self.tree.heading("name",   text="Tên File",      anchor=tk.W)
         self.tree.heading("size",   text="Dung lượng",   anchor=tk.CENTER)
         self.tree.heading("status", text="Trạng thái",   anchor=tk.CENTER)
 
@@ -213,11 +225,11 @@ class PDFFlattenerGUI:
         added = 0
         for p in paths:
             if p.is_dir():
-                for pdf in p.glob("*.pdf"):
-                    if pdf not in self.files_to_process:
-                        self.files_to_process.append(pdf)
+                for doc in _documents_in(p):
+                    if doc not in self.files_to_process:
+                        self.files_to_process.append(doc)
                         added += 1
-            elif p.suffix.lower() == ".pdf" and p not in self.files_to_process:
+            elif _is_supported(p) and p not in self.files_to_process:
                 self.files_to_process.append(p)
                 added += 1
 
@@ -229,25 +241,30 @@ class PDFFlattenerGUI:
 
     def add_files(self):
         files = filedialog.askopenfilenames(
-            title="Chọn file PDF",
-            filetypes=[("File PDF", "*.pdf"), ("Tất cả file", "*.*")]
+            title="Chọn file PDF hoặc Word",
+            filetypes=[
+                ("File PDF / Word", "*.pdf *.docx"),
+                ("File PDF", "*.pdf"),
+                ("File Word", "*.docx"),
+                ("Tất cả file", "*.*"),
+            ]
         )
         for f in files:
             path = Path(f)
-            if path.suffix.lower() == ".pdf" and path not in self.files_to_process:
+            if _is_supported(path) and path not in self.files_to_process:
                 self.files_to_process.append(path)
         if files:
             self._update_treeview()
 
     def add_directory(self):
-        dir_path = filedialog.askdirectory(title="Chọn thư mục chứa file PDF")
+        dir_path = filedialog.askdirectory(title="Chọn thư mục chứa file PDF / Word")
         if not dir_path:
             return
-        pdf_files = list(Path(dir_path).glob("*.pdf"))
-        if not pdf_files:
-            messagebox.showinfo("Thông báo", "Không tìm thấy file PDF nào trong thư mục đã chọn.")
+        doc_files = _documents_in(Path(dir_path))
+        if not doc_files:
+            messagebox.showinfo("Thông báo", "Không tìm thấy file PDF hoặc Word nào trong thư mục đã chọn.")
             return
-        for path in pdf_files:
+        for path in doc_files:
             if path not in self.files_to_process:
                 self.files_to_process.append(path)
         self._update_treeview()
@@ -282,7 +299,7 @@ class PDFFlattenerGUI:
 
     def start_processing(self):
         if not self.files_to_process:
-            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất 1 file PDF để xử lý.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất 1 file PDF / Word để xử lý.")
             return
         if self.is_processing:
             return
@@ -305,8 +322,18 @@ class PDFFlattenerGUI:
         success_count = 0
         fail_count = 0
 
+        used_names: set[str] = set()
+
         for idx, pdf_path in enumerate(self.files_to_process, 1):
-            out_file = self.output_dir / f"{pdf_path.stem}_flattened.pdf"
+            # Same name, same format as the input -- only the folder differs.
+            out_file = self._output_path_for(pdf_path, used_names)
+            if out_file is None:
+                fail_count += 1
+                self.root.after(0, lambda p=pdf_path: self._update_file_status(
+                    p, "❌ File nằm trong thư mục kết quả"
+                ))
+                self.root.after(0, lambda val=idx: self.progress_bar.config(value=val))
+                continue
 
             self.root.after(0, lambda p=pdf_path: self._update_file_status(p, "Đang xử lý..."))
             self.root.after(0, lambda i=idx, t=total, p=pdf_path: self.status_lbl.config(
@@ -334,6 +361,30 @@ class PDFFlattenerGUI:
             summary_msg += f" (Lỗi: {fail_count})"
 
         self.root.after(0, lambda: self._finish_processing(summary_msg))
+
+    def _output_path_for(self, source: Path, used_names: set) -> Path | None:
+        """Where this file's result goes, or None when that would clobber it.
+
+        The output now keeps the input's own name, so two guards are needed:
+        a file already sitting in the results folder must not be overwritten,
+        and two inputs of the same name from different folders must not land on
+        top of each other.
+        """
+        candidate = self.output_dir / source.name
+        try:
+            if candidate.resolve() == source.resolve():
+                return None
+        except OSError:
+            pass
+
+        if candidate.name.lower() in used_names:
+            n = 2
+            while f"{source.stem} ({n}){source.suffix}".lower() in used_names:
+                n += 1
+            candidate = self.output_dir / f"{source.stem} ({n}){source.suffix}"
+
+        used_names.add(candidate.name.lower())
+        return candidate
 
     def _update_file_status(self, path: Path, status: str):
         iid = str(path)

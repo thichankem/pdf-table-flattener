@@ -34,6 +34,15 @@ class CellLine:
 
 
 @dataclass
+class Item:
+    """One logical bullet inside a cell."""
+
+    level: int
+    text: str
+    marker: str = ""
+
+
+@dataclass
 class GridCell:
     row: int
     col: int
@@ -41,6 +50,10 @@ class GridCell:
     col_span: int
     bbox: BBox
     lines: List[CellLine] = field(default_factory=list)
+    # Pre-parsed bullets, for a source that already knows its own paragraph
+    # structure (a .docx cell states it explicitly).  When None -- the PDF case
+    # -- the items are inferred from the geometry of `lines`.
+    items: Optional[List[Item]] = None
 
     @property
     def text(self) -> str:

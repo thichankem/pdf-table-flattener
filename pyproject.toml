@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pdf-table-tool"
 version = "1.0.0"
-description = "Flatten PDF tables into clean bullet points directly patched on original PDF"
+description = "Flatten PDF and Word tables into clean bullet points, patched into the original file"
 authors = [{ name = "PDF Table Tool Team" }]
 requires-python = ">=3.10"
 dependencies = [
     "pymupdf>=1.23.0",
     "pdfplumber>=0.10.0",
+    "python-docx>=1.1.0",
     "requests>=2.31.0",
 ]
 

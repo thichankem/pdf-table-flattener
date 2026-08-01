@@ -25,6 +25,13 @@ def _outermost(tables: List[Any]) -> List[Any]:
 
 
 class PDFTableFlattenerPipeline:
+    """Flattens the tables of a document.
+
+    `process` accepts a .pdf or a .docx and writes the same format back out;
+    Word files are handed to :mod:`.docx_flattener`, which shares this module's
+    formatter so both formats produce the same bullets.
+    """
+
     def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
         self.formatter = TableFormatter()
         self.patcher = PDFPatcher()
@@ -32,6 +39,7 @@ class PDFTableFlattenerPipeline:
         self.use_llm = settings.USE_LLM if use_llm is None else use_llm
         self._refiner = None
         self._classifier = None
+        self._docx = None
         if self.use_llm:
             from .extractors.llm_reconstructor import LLMBulletRefiner
             from .extractors.llm_structure import LLMStructureClassifier
@@ -40,6 +48,21 @@ class PDFTableFlattenerPipeline:
             self._classifier = LLMStructureClassifier()
 
     def process(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
+        if pdf_path.lower().endswith(".docx"):
+            return self._docx_flattener().process(pdf_path, output_path)
+        return self._process_pdf(pdf_path, output_path)
+
+    def _docx_flattener(self):
+        """Word support is loaded on demand, so a PDF-only run never needs it."""
+        if self._docx is None:
+            from .docx_flattener import DocxTableFlattener
+
+            self._docx = DocxTableFlattener(
+                use_llm=self.use_llm, verify_output=self.verify_output
+            )
+        return self._docx
+
+    def _process_pdf(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
         logger.info("Processing %s", pdf_path)
 
         pages_with_tables, pages_without_tables = detect_tables_by_page(pdf_path)
@@ -175,3 +198,9 @@ class PDFTableFlattenerPipeline:
         common_size = sizes.most_common(1)[0][0] or settings.BULLET_FONT_SIZE
         size = min(12.0, max(settings.MIN_FONT_SIZE, common_size))
         return settings.get_font_path(serif=serif), size
+
+
+# The class handles PDF and Word alike; the old name stays for existing callers.
+DocumentFlattenerPipeline = PDFTableFlattenerPipeline
+
+SUPPORTED_SUFFIXES = (".pdf", ".docx")
