@@ -8,12 +8,20 @@ import pdfplumber
 
 from .config import settings
 from .formatter import TableFormatter, detect_structure, normalise_sliced_cells
-from .grid_extractor import build_grid, words_in_bbox
+from .grid_extractor import build_grid
 from .pdf_patcher import PDFPatcher
-from .table_detector import detect_tables_by_page
+from .table_detector import _filter_nested, detect_tables_by_page
 from .verifier import VerificationReport, verify
 
 logger = logging.getLogger(__name__)
+
+
+def _outermost(tables: List[Any]) -> List[Any]:
+    """Drop tables nested inside another table of the same list."""
+    if not tables:
+        return []
+    kept, _children = _filter_nested(tables)
+    return kept
 
 
 class PDFTableFlattenerPipeline:
@@ -47,11 +55,10 @@ class PDFTableFlattenerPipeline:
                 page_patches: List[Dict[str, Any]] = []
 
                 for info in pages_with_tables[page_num]:
-                    extra_words: List[Dict[str, Any]] = []
-                    for child in info.dropped_children:
-                        extra_words.extend(words_in_bbox(page, tuple(child.bbox)))
-
-                    grid = build_grid(page, info.raw_table, extra_words=extra_words)
+                    nested_blocks = self._flatten_nested(page, info)
+                    grid = build_grid(
+                        page, info.raw_table, nested_blocks=nested_blocks
+                    )
                     if grid.n_rows == 0:
                         continue
 
@@ -125,6 +132,29 @@ class PDFTableFlattenerPipeline:
         return summary
 
     # -- helpers ---------------------------------------------------------
+    def _flatten_nested(self, page, info) -> List[tuple]:
+        """Flatten every table drawn inside a cell of `info`, innermost first.
+
+        Word draws a sub-table (``Nhóm chức danh | HMTC``) with its own rulings,
+        so it arrives as a separate table sitting inside a parent cell.  Giving
+        it the full treatment here -- headers, labels, bullets -- keeps its
+        column pairing, which is lost if its words are merely poured into the
+        parent cell.
+        """
+        blocks: List[tuple] = []
+        for child in _outermost(info.dropped_children):
+            try:
+                child_grid = build_grid(page, child)
+                if child_grid.n_rows == 0:
+                    continue
+                child_lines, _ = self.formatter.format_grid(child_grid)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Nested table flattening failed: %s", exc)
+                continue
+            if child_lines:
+                blocks.append((tuple(child.bbox), child_lines))
+        return blocks
+
     @staticmethod
     def _match_typography(page, bbox) -> tuple:
         """Pick a font face and size close to what the table itself used."""

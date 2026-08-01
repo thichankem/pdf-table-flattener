@@ -59,9 +59,19 @@ class PDFPatcher:
                 continue
 
             page = out[-1]
-            patches = sorted(
-                patches_by_page[page_num], key=lambda p: p["bbox"][1]
-            )
+            patches = [
+                dict(p, bbox=_to_page_space(page, p["bbox"]))
+                for p in patches_by_page[page_num]
+            ]
+            patches.sort(key=lambda p: p["bbox"][1])
+            # Work on the page as if it were not rotated.  PyMuPDF mixes the two
+            # frames -- drawings and redactions are unrotated, TextWriter is
+            # validated against the rotated rectangle -- and clearing /Rotate for
+            # the duration makes both agree.  It is restored below, so the saved
+            # page looks exactly as before.
+            rotation = page.rotation
+            if rotation:
+                page.set_rotation(0)
             obstacles = self._page_obstacles(page, [p["bbox"] for p in patches])
 
             # Pass 1 -- delete the table's ruling lines.  No fill is painted and
@@ -106,6 +116,9 @@ class PDFPatcher:
                 stats["shrunk_tables"] += int(shrunk)
                 if remaining:
                     overflow.extend(remaining)
+
+            if rotation:
+                page.set_rotation(rotation)
 
             if overflow:
                 stats["spill_pages"] += self._write_spill_pages(
@@ -215,7 +228,7 @@ class PDFPatcher:
     ) -> float:
         """Lowest y the bullets for this table may reach on the current page."""
         x0, _top, x1, bottom = bbox
-        limit = page.rect.height - settings.PAGE_BOTTOM_MARGIN
+        limit = _page_box(page).height - settings.PAGE_BOTTOM_MARGIN
 
         for r in obstacles:
             if r.y0 < bottom - 1:
@@ -365,8 +378,9 @@ class PDFPatcher:
         lines: List[str],
         patches: Sequence[Dict[str, Any]],
     ) -> int:
-        width = template.rect.width
-        height = template.rect.height
+        box = _page_box(template)
+        width = box.width
+        height = box.height
         left = min(p["bbox"][0] for p in patches)
         right = max(p["bbox"][2] for p in patches)
         font_file = patches[0].get("font_file") or self.font_path
@@ -397,6 +411,32 @@ class PDFPatcher:
             remaining = leftover
         logger.info("Added %d continuation page(s) for overflowing bullets.", pages_added)
         return pages_added
+
+
+def _to_page_space(
+    page: fitz.Page, bbox: Tuple[float, float, float, float]
+) -> Tuple[float, float, float, float]:
+    """Convert a pdfplumber bbox into the coordinates PyMuPDF edits in.
+
+    On a page carrying /Rotate, pdfplumber reports what the reader sees while
+    PyMuPDF's drawings, text and redactions all live in the unrotated page --
+    so a table on such a page would be measured in one place and erased in
+    another.  Everything downstream works in unrotated space.
+    """
+    if not page.rotation:
+        return tuple(bbox)
+    rect = fitz.Rect(bbox) * page.derotation_matrix
+    rect.normalize()
+    return (rect.x0, rect.y0, rect.x1, rect.y1)
+
+
+def _page_box(page: fitz.Page) -> fitz.Rect:
+    """The page rectangle in unrotated coordinates."""
+    if not page.rotation:
+        return page.rect
+    rect = fitz.Rect(page.rect) * page.derotation_matrix
+    rect.normalize()
+    return rect
 
 
 def _build_tounicode(font: fitz.Font, charset: Sequence[str]) -> bytes:

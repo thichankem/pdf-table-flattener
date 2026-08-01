@@ -219,6 +219,10 @@ def _header_band_height(matrix_cells, grid: Grid) -> int:
     present = [c for c in row0 if not c.is_empty]
     if not present:
         return 0
+    # One filled cell cannot be naming three or more columns; in a two-column
+    # table a blank label-column header is normal.
+    if grid.n_cols >= 3 and len(present) < 2:
+        return 0
     if any(is_bullet_line(c.text) or len(c.text) > 150 for c in present):
         return 0
     # A row of pure numbers is data, not a header.

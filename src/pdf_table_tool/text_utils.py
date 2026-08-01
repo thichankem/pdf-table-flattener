@@ -15,7 +15,7 @@ BULLET_PREFIX_RE = re.compile(r"^\s*([-‐-―•●○▪·+*o])\s+")
 # Characters that carry no visible content but pollute extracted text.
 _INVISIBLE_CODEPOINTS = (
     list(range(0x00, 0x09)) + list(range(0x0B, 0x20)) +
-    [0xAD, 0x2060, 0xFEFF] + list(range(0x200B, 0x2010)) +
+    [0x2060, 0xFEFF] + list(range(0x200B, 0x2010)) +
     list(range(0x202A, 0x202F))
 )
 INVISIBLE_RE = re.compile(
@@ -51,6 +51,9 @@ def normalize_text(value: str) -> str:
     if not value:
         return ""
     text = unicodedata.normalize("NFC", str(value))
+    # A soft hyphen is usually invisible, but a PDF that draws one means it as a
+    # hyphen -- deleting it would silently drop a visible character.
+    text = text.replace("­", "-")
     text = INVISIBLE_RE.sub("", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = [SPACE_RE.sub(" ", ln).strip() for ln in text.split("\n")]

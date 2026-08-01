@@ -131,6 +131,32 @@ def _rect_distance(bbox: BBox, x: float, y: float) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+def _join_words(group: List[Dict[str, Any]]) -> str:
+    """Concatenate a line's words, inserting a space only where one was drawn.
+
+    A glyph set in a different font -- the minus of "-3%", a bracket, a currency
+    symbol -- is reported as its own word even though it touches its neighbour.
+    Joining everything with a blank would turn "-3%" into "- 3%", which then
+    reads as a bullet and loses the sign.
+    """
+    if not group:
+        return ""
+    widths = [
+        (w["x1"] - w["x0"]) / max(1, len(w["text"]))
+        for w in group
+        if w["x1"] > w["x0"] and w["text"]
+    ]
+    char_w = sorted(widths)[len(widths) // 2] if widths else 5.0
+    threshold = char_w * 0.35
+
+    parts = [group[0]["text"]]
+    for prev, w in zip(group, group[1:]):
+        if w["x0"] - prev["x1"] > threshold:
+            parts.append(" ")
+        parts.append(w["text"])
+    return "".join(parts)
+
+
 def _group_words_into_lines(words: List[Dict[str, Any]]) -> List[CellLine]:
     """Cluster words by baseline, then read left-to-right."""
     if not words:
@@ -150,7 +176,7 @@ def _group_words_into_lines(words: List[Dict[str, Any]]) -> List[CellLine]:
     lines: List[CellLine] = []
     for group in groups:
         group.sort(key=lambda w: w["x0"])
-        text = normalize_text(" ".join(w["text"] for w in group))
+        text = normalize_text(_join_words(group))
         if not text:
             continue
         lines.append(
@@ -165,11 +191,21 @@ def _group_words_into_lines(words: List[Dict[str, Any]]) -> List[CellLine]:
     return lines
 
 
-def build_grid(page, table, extra_words: Optional[List[Dict[str, Any]]] = None) -> Grid:
+def build_grid(
+    page,
+    table,
+    extra_words: Optional[List[Dict[str, Any]]] = None,
+    nested_blocks: Optional[List[Tuple[BBox, List[str]]]] = None,
+) -> Grid:
     """Build a :class:`Grid` from a pdfplumber page and one of its Table objects.
 
-    `extra_words` lets a caller feed in words belonging to nested tables that were
-    discarded, guaranteeing they still land somewhere.
+    `extra_words` lets a caller feed in words that were otherwise discarded,
+    guaranteeing they still land somewhere.
+
+    `nested_blocks` carries tables drawn *inside* a cell, already flattened to
+    bullet lines.  Their words are taken out of the word stream and the finished
+    bullets are spliced back in at the same place, so a sub-table keeps its own
+    column pairing instead of collapsing into a run of loose words.
     """
     raw_cells = [c for c in (table.cells or []) if c]
     if not raw_cells:
@@ -212,6 +248,8 @@ def build_grid(page, table, extra_words: Optional[List[Dict[str, Any]]] = None) 
         extra_attrs=["size"],
     )
     inside = [w for w in words if _belongs_to(w, (tx0, ttop, tx1, tbottom))]
+    for nested_bbox, _lines in nested_blocks or []:
+        inside = [w for w in inside if not _belongs_to(w, nested_bbox)]
     if extra_words:
         known = {(round(w["x0"], 2), round(w["top"], 2), w["text"]) for w in inside}
         for w in extra_words:
@@ -239,8 +277,47 @@ def build_grid(page, table, extra_words: Optional[List[Dict[str, Any]]] = None) 
     for idx, cell in enumerate(grid_cells):
         cell.lines = _group_words_into_lines(buckets[idx])
 
+    for nested_bbox, nested_lines in nested_blocks or []:
+        _splice_nested_block(grid_cells, nested_bbox, nested_lines)
+
     grid_cells.sort(key=lambda c: (c.row, c.col))
     return Grid(n_rows=n_rows, n_cols=n_cols, cells=grid_cells, bbox=tuple(table.bbox))
+
+
+def _splice_nested_block(
+    cells: List[GridCell], bbox: BBox, lines: List[str]
+) -> None:
+    """Insert a sub-table's finished bullets into the cell that contains it.
+
+    They enter as ordinary cell lines placed at the sub-table's own position, so
+    everything downstream -- ordering, indent level, wrapping -- treats them
+    like any other bullet the cell already had.
+    """
+    if not lines or not cells:
+        return
+
+    x0, top, x1, bottom = bbox
+    cx, cy = (x0 + x1) / 2.0, (top + bottom) / 2.0
+    target = min(cells, key=lambda c: _rect_distance(c.bbox, cx, cy))
+
+    height = max(1.0, bottom - top)
+    step = height / max(1, len(lines))
+    for i, text in enumerate(lines):
+        line_top = top + i * step
+        target.lines.append(
+            CellLine(
+                # Already normalised by the formatter; re-normalising here would
+                # collapse the "  |  " column separator down to a single space.
+                text=text,
+                x0=x0,
+                # Sub-table bullets are self-contained: never let the paragraph
+                # joiner glue the next line of the parent cell onto them.
+                x1=x0 + 1.0,
+                top=line_top,
+                bottom=line_top + step * 0.9,
+            )
+        )
+    target.lines.sort(key=lambda ln: ln.top)
 
 
 def words_in_bbox(page, bbox: BBox) -> List[Dict[str, Any]]:

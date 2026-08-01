@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Set, Tuple
 
 import pdfplumber
 
+from .borderless import find_borderless_tables
+
 logger = logging.getLogger(__name__)
 
 BBox = Tuple[float, float, float, float]
@@ -80,6 +82,76 @@ TABLE_SETTINGS_LINES = {
 }
 
 
+def _absorb_rules(page, block) -> Tuple[List[float], List[float]]:
+    """Pull partly-ruled tables' own lines into the detected block.
+
+    A "borderless" table often still has a rule under its header, or the
+    booktabs look of horizontal rules only.  Those rules belong to the table:
+    if the block does not reach them they survive redaction and the output
+    still contains something that reads as a table.
+    """
+    cols = sorted(block.column_edges)
+    rows = sorted(block.row_edges)
+    width = cols[-1] - cols[0]
+    if width <= 0:
+        return cols, rows
+
+    horizontals = [
+        ln
+        for ln in list(page.lines) + [r for r in page.rects if r["height"] <= 2]
+        if (ln["x1"] - ln["x0"]) >= width * 0.7
+        and rows[0] - 25 <= ln["top"] <= rows[-1] + 25
+    ]
+    for ln in horizontals:
+        cols[0] = min(cols[0], ln["x0"] - 1.0)
+        cols[-1] = max(cols[-1], ln["x1"] + 1.0)
+        y = (ln["top"] + ln["bottom"]) / 2.0
+        if all(abs(y - r) > 2.0 for r in rows):
+            rows.append(y)
+
+    rows.sort()
+    return cols, rows
+
+
+def _borderless_candidates(page, ruled: List[Any]) -> List[Any]:
+    """Turn whitespace-aligned tables into ordinary pdfplumber Table objects.
+
+    Feeding the detected gutters back as ``explicit`` rulings means the rest of
+    the pipeline -- cell geometry, headers, flattening, redaction -- treats a
+    borderless table exactly like a ruled one.
+    """
+    try:
+        blocks = find_borderless_tables(page, exclude=[t.bbox for t in ruled])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Borderless detection failed: %s", exc)
+        return []
+
+    out: List[Any] = []
+    for block in blocks:
+        cols, rows = _absorb_rules(page, block)
+        settings = {
+            "vertical_strategy": "explicit",
+            "horizontal_strategy": "explicit",
+            "explicit_vertical_lines": cols,
+            "explicit_horizontal_lines": rows,
+        }
+        crop = (
+            max(0.0, cols[0]),
+            max(0.0, rows[0]),
+            min(float(page.width), cols[-1]),
+            min(float(page.height), rows[-1]),
+        )
+        try:
+            tables = page.crop(crop, strict=False).find_tables(settings)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Borderless table build failed: %s", exc)
+            continue
+        for t in tables:
+            if (t.bbox[2] - t.bbox[0]) > 20 and (t.bbox[3] - t.bbox[1]) > 15:
+                out.append(t)
+    return out
+
+
 def detect_tables_by_page(
     pdf_path: str,
 ) -> Tuple[Dict[int, List[TableInfo]], Set[int]]:
@@ -100,6 +172,8 @@ def detect_tables_by_page(
                 for t in found
                 if (t.bbox[2] - t.bbox[0]) > 20 and (t.bbox[3] - t.bbox[1]) > 15
             ]
+
+            candidates.extend(_borderless_candidates(page, candidates))
 
             if not candidates:
                 pages_without_tables.add(page_num)

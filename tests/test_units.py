@@ -36,7 +36,12 @@ def test_join_wrapped_lines_keeps_real_words_separate():
 
 
 def test_normalize_text_strips_invisible_characters():
-    assert normalize_text("a­b‌c d") == "abc d"
+    assert normalize_text("a​b‌c d") == "abc d"
+
+
+def test_normalize_text_keeps_a_drawn_soft_hyphen_as_a_hyphen():
+    """A PDF that draws U+00AD means a hyphen; deleting it would lose a glyph."""
+    assert normalize_text("­3%") == "-3%"
 
 
 def test_collapse_blank_lines_never_leaves_two_in_a_row():
