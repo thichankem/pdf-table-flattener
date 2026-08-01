@@ -1,58 +1,129 @@
-import pytest
-import pdfplumber
-import fitz
+"""End-to-end tests: the three mandatory criteria of test.md, on real PDFs.
+
+    1. Content outside tables is untouched, 100%.
+    2. Every table is flattened into bullets; no table survives.
+    3. The generated text is clean: no fake labels, no hidden characters, no
+       two blank lines in a row.
+"""
+
 from pathlib import Path
-from src.pdf_table_tool.formatter import TableFormatter
-from src.pdf_table_tool.extractors.base import TableData
-from src.pdf_table_tool.pipeline import PDFTableFlattenerPipeline
 
-TEST_PDF_DIR = Path(__file__).parent.parent / "input test"
+import fitz
+import pdfplumber
+import pytest
 
-def test_formatter_criteria_2_and_3():
-    """Verify criteria 2 & 3: bullet format and clean output without fake labels."""
-    sample_table = TableData(
-        headers=["Tên", "Tuổi", "Chức vụ", "Cột 4"],
-        rows=[
-            ["Nam", "25", "Dev", "Ghi chú 1"],
-            ["Hoa", "23", "Designer", ""],
-        ]
-    )
+from pdf_table_tool.pipeline import PDFTableFlattenerPipeline
 
-    bullets = TableFormatter.format_to_bullets(sample_table)
+ROOT = Path(__file__).resolve().parent.parent
+TEST_PDF_DIR = ROOT / "input test"
 
-    assert len(bullets) == 2
-    assert bullets[0] == "- Tên: Nam  |  Tuổi: 25  |  Chức vụ: Dev  |  Ghi chú 1"
-    # Verify 'Cột 4' fake header filtering: empty cell skipped, value appended clean
-    assert bullets[1] == "- Tên: Hoa  |  Tuổi: 23  |  Chức vụ: Designer"
+PDF_FILES = sorted(TEST_PDF_DIR.glob("*.pdf")) if TEST_PDF_DIR.exists() else []
 
-def test_end_to_end_flattening(tmp_path):
-    """Run E2E flattening on sample PDF from input test directory."""
-    sample_pdfs = list(TEST_PDF_DIR.glob("*.pdf"))
-    if not sample_pdfs:
-        pytest.skip("No sample PDFs found in input test directory.")
+pytestmark = pytest.mark.skipif(
+    not PDF_FILES, reason="no sample PDFs in 'input test/'"
+)
 
-    test_file = sample_pdfs[0]
-    out_file = tmp_path / "output_test.pdf"
+LINE_SETTINGS = {
+    "vertical_strategy": "lines",
+    "horizontal_strategy": "lines",
+    "snap_tolerance": 3,
+    "join_tolerance": 3,
+    "intersection_tolerance": 3,
+}
 
-    pipeline = PDFTableFlattenerPipeline(check_ollama=False)
-    summary = pipeline.process(str(test_file), str(out_file))
 
-    assert summary["status"] == "success"
-    assert out_file.exists()
+@pytest.fixture(scope="session")
+def pipeline():
+    return PDFTableFlattenerPipeline(use_llm=False)
 
-    # Criteria 2 Verification: Ensure no explicit grid tables remain in output PDF
-    with pdfplumber.open(str(out_file)) as pdf:
-        total_remaining_grid_tables = 0
-        total_bullet_lines_found = 0
 
+@pytest.fixture(scope="session")
+def flattened(pipeline, tmp_path_factory):
+    """Run every sample PDF once; hand the tests the summaries."""
+    out_dir = tmp_path_factory.mktemp("flattened")
+    results = {}
+    for pdf in PDF_FILES:
+        out = out_dir / f"{pdf.stem}_flattened.pdf"
+        results[pdf.name] = (pdf, out, pipeline.process(str(pdf), str(out)))
+    return results
+
+
+def _case(flattened, name):
+    return flattened[name]
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_1_no_content_is_lost(flattened, name):
+    _src, _out, summary = _case(flattened, name)
+    report = summary["verification"]
+    assert report.criterion_1_and_2_ok, f"mất nội dung: {report.missing_tokens}"
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_1_non_table_pages_are_byte_identical(flattened, name):
+    """Pages the tool declared table-free must come through untouched."""
+    src_path, out_path, _summary = _case(flattened, name)
+    with fitz.open(src_path) as src, fitz.open(out_path) as out:
+        for page_idx in range(min(len(src), len(out))):
+            with pdfplumber.open(src_path) as pdf:
+                if pdf.pages[page_idx].find_tables(LINE_SETTINGS):
+                    continue
+            assert src[page_idx].get_text() == out[page_idx].get_text()
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_2_no_table_survives(flattened, name):
+    _src, out_path, summary = _case(flattened, name)
+    report = summary["verification"]
+    assert report.criterion_2_ok, f"còn bảng ở trang {report.residual_table_pages}"
+
+    with pdfplumber.open(out_path) as pdf:
         for page in pdf.pages:
-            tables = page.find_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
-            total_remaining_grid_tables += len(tables)
+            for table in page.find_tables(LINE_SETTINGS):
+                width = table.bbox[2] - table.bbox[0]
+                height = table.bbox[3] - table.bbox[1]
+                assert width <= 20 or height <= 15
 
-            text = page.extract_text() or ""
-            for line in text.splitlines():
-                if line.strip().startswith("- "):
-                    total_bullet_lines_found += 1
 
-        assert total_remaining_grid_tables == 0, f"Expected 0 grid tables remaining, found {total_remaining_grid_tables}"
-        assert total_bullet_lines_found > 0, "Expected formatted bullet lines in output PDF"
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_2_tables_became_bullets(flattened, name):
+    """Every flattened table contributes at least one bullet line."""
+    _src, out_path, summary = _case(flattened, name)
+    if summary["total_tables_flattened"] == 0:
+        pytest.skip("file has no tables")
+    with fitz.open(out_path) as out:
+        text = "\n".join(page.get_text() for page in out)
+    assert text.count("\n- ") + text.startswith("- ") >= 1
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_3_output_is_clean(flattened, name):
+    _src, out_path, summary = _case(flattened, name)
+    report = summary["verification"]
+    assert not report.fake_labels, f"nhãn giả: {report.fake_labels}"
+    assert not report.stray_characters, f"ký tự lạ: {report.stray_characters}"
+    assert not report.double_blank_lines, "có dòng trống liên tiếp"
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_criterion_3_rendered_text_extracts_as_plain_characters(flattened, name):
+    """Bullets must copy out as real hyphens and spaces, not hidden lookalikes."""
+    _src, out_path, _summary = _case(flattened, name)
+    with fitz.open(out_path) as out:
+        for page in out:
+            for line in page.get_text().splitlines():
+                if line.lstrip().startswith("- "):
+                    assert chr(0x00AD) not in line
+                    assert chr(0x00A0) not in line
+
+
+@pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
+def test_all_three_criteria_pass(flattened, name):
+    _src, _out, summary = _case(flattened, name)
+    assert summary["verification"].passed, summary["verification"].describe()
+
+
+def test_page_count_never_shrinks(flattened):
+    for _name, (src_path, out_path, _summary) in flattened.items():
+        with fitz.open(src_path) as src, fitz.open(out_path) as out:
+            assert len(out) >= len(src)

@@ -1,77 +1,133 @@
-import os
-from typing import Dict, List, Any
-from .table_detector import detect_tables_by_page
-from .router import TableRouter
-from .formatter import TableFormatter
-from .layout_planner import LayoutPlanner
-from .pdf_patcher import PDFPatcher
-from .ollama_bootstrap import ensure_ollama_running
+"""End-to-end orchestration: detect -> extract -> flatten -> render -> verify."""
+
 import logging
+from collections import Counter
+from typing import Any, Dict, List, Optional
+
+import pdfplumber
+
+from .config import settings
+from .formatter import TableFormatter
+from .grid_extractor import build_grid, words_in_bbox
+from .pdf_patcher import PDFPatcher
+from .table_detector import detect_tables_by_page
+from .verifier import VerificationReport, verify
 
 logger = logging.getLogger(__name__)
 
+
 class PDFTableFlattenerPipeline:
-    def __init__(self, check_ollama: bool = True):
-        self.check_ollama = check_ollama
-        self.router = TableRouter()
+    def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
         self.formatter = TableFormatter()
-        self.planner = LayoutPlanner()
         self.patcher = PDFPatcher()
+        self.verify_output = verify_output
+        self.use_llm = settings.USE_LLM if use_llm is None else use_llm
+        self._refiner = None
+        if self.use_llm:
+            from .extractors.llm_reconstructor import LLMBulletRefiner
+
+            self._refiner = LLMBulletRefiner()
 
     def process(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
-        """
-        Main end-to-end pipeline execution.
-        """
-        logger.info(f"Starting processing for file: {pdf_path}")
-        if self.check_ollama:
-            is_ollama_ok, msg = ensure_ollama_running()
-            logger.info(f"Ollama status: {msg}")
+        logger.info("Processing %s", pdf_path)
 
-        # Step 1: Detect tables & classify pages
         pages_with_tables, pages_without_tables = detect_tables_by_page(pdf_path)
 
         patches_by_page: Dict[int, List[Dict[str, Any]]] = {}
-        total_tables_processed = 0
+        total_tables = 0
+        inherited_headers: Optional[List[str]] = None
+        all_lines: List[str] = []
 
-        # Step 2: Route, extract, format & plan layout for pages with tables
-        for page_num, tables in pages_with_tables.items():
-            page_patches = []
-            for t_info in tables:
-                bbox = t_info.bbox
-                # Route & Extract table data
-                table_data = self.router.route_and_extract(pdf_path, page_num, bbox)
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num in sorted(pages_with_tables):
+                page = pdf.pages[page_num]
+                page_patches: List[Dict[str, Any]] = []
 
-                # Format table data to clean bullets
-                bullet_lines = self.formatter.format_to_bullets(table_data)
+                for info in pages_with_tables[page_num]:
+                    extra_words: List[Dict[str, Any]] = []
+                    for child in info.dropped_children:
+                        extra_words.extend(words_in_bbox(page, tuple(child.bbox)))
 
-                # Plan layout
-                layout_info = self.planner.plan_layout(bbox, bullet_lines)
+                    grid = build_grid(page, info.raw_table, extra_words=extra_words)
+                    if grid.n_rows == 0:
+                        continue
 
-                page_patches.append({
-                    "table_data": table_data,
-                    "bullet_lines": bullet_lines,
-                    "layout": layout_info,
-                    "original_bbox": bbox
-                })
-                total_tables_processed += 1
+                    carry = inherited_headers if info.is_continuation else None
+                    bullet_lines, headers = self.formatter.format_grid(grid, carry)
 
-            patches_by_page[page_num] = page_patches
+                    if self._refiner is not None:
+                        bullet_lines = self._refiner.refine(bullet_lines)
 
-        # Step 3: Patch PDF
-        self.patcher.process_pdf(
+                    if not bullet_lines:
+                        continue
+
+                    font_file, font_size = self._match_typography(page, info.bbox)
+                    page_patches.append(
+                        {
+                            "bbox": info.bbox,
+                            "bullet_lines": bullet_lines,
+                            "font_file": font_file,
+                            "font_size": font_size,
+                        }
+                    )
+                    total_tables += 1
+                    all_lines.extend(bullet_lines)
+                    if any(h.strip() for h in headers):
+                        inherited_headers = headers
+
+                if page_patches:
+                    patches_by_page[page_num] = page_patches
+                else:
+                    pages_without_tables.add(page_num)
+
+        render_stats = self.patcher.process_pdf(
             pdf_path=pdf_path,
             output_path=output_path,
             patches_by_page=patches_by_page,
-            pages_without_tables=pages_without_tables
+            pages_without_tables=pages_without_tables,
         )
 
-        summary = {
+        summary: Dict[str, Any] = {
             "input_file": pdf_path,
             "output_file": output_path,
             "pages_passthrough_count": len(pages_without_tables),
-            "pages_patched_count": len(pages_with_tables),
-            "total_tables_flattened": total_tables_processed,
-            "status": "success"
+            "pages_patched_count": len(patches_by_page),
+            "total_tables_flattened": total_tables,
+            "continuation_pages_added": render_stats.get("spill_pages", 0),
+            "status": "success",
         }
-        logger.info(f"Processing complete: {summary}")
+
+        if self.verify_output:
+            report: VerificationReport = verify(pdf_path, output_path, all_lines)
+            summary["verification_passed"] = report.passed
+            summary["verification"] = report
+            if not report.passed:
+                summary["status"] = "verification_failed"
+                logger.warning("Verification failed:\n%s", report.describe())
+            else:
+                logger.info("Verification passed:\n%s", report.describe())
+
+        logger.info("Done: %s", {k: v for k, v in summary.items() if k != "verification"})
         return summary
+
+    # -- helpers ---------------------------------------------------------
+    @staticmethod
+    def _match_typography(page, bbox) -> tuple:
+        """Pick a font face and size close to what the table itself used."""
+        x0, top, x1, bottom = bbox
+        chars = [
+            c
+            for c in page.chars
+            if x0 - 1 <= c["x0"] <= x1 + 1 and top - 1 <= c["top"] <= bottom + 1
+        ]
+        if not chars:
+            return settings.get_font_path(serif=True), settings.BULLET_FONT_SIZE
+
+        names = Counter((c.get("fontname") or "").lower() for c in chars)
+        dominant = names.most_common(1)[0][0]
+        serif = not any(k in dominant for k in ("arial", "helvetica", "calibri", "sans"))
+
+        sizes = Counter(round(float(c.get("size") or 0), 1) for c in chars)
+        common_size = sizes.most_common(1)[0][0] or settings.BULLET_FONT_SIZE
+        size = min(12.0, max(settings.MIN_FONT_SIZE, common_size))
+        return settings.get_font_path(serif=serif), size
