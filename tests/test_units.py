@@ -140,6 +140,56 @@ def test_flatten_produces_the_bullet_shape_from_test_md():
     assert headers == ["Tên", "Tuổi", "Chức vụ"]
 
 
+def test_continuation_page_labels_its_rows_with_the_headers_it_inherited():
+    """A table spilling onto the next page usually leaves its headers behind.
+
+    Row 0 of the continuation then looks exactly like a header to geometry, and
+    the rows below it used to be captioned with the first record's own values
+    ("Mã HĐ" becoming "HD-2026-0021").
+    """
+    grid = _grid(
+        [["HD-2026-0021", "26/03/2026"], ["HD-2026-0022", "02/05/2026"]],
+        n_cols=2,
+    )
+    lines, headers = TableFormatter().format_grid(grid, ["Mã HĐ", "Ngày Xuất"])
+    assert lines == [
+        "- Mã HĐ: HD-2026-0021  |  Ngày Xuất: 26/03/2026",
+        "- Mã HĐ: HD-2026-0022  |  Ngày Xuất: 02/05/2026",
+    ]
+    assert headers == ["Mã HĐ", "Ngày Xuất"]
+
+
+def test_continuation_page_that_repeats_its_headers_does_not_read_them_as_data():
+    grid = _grid(
+        [["Mã HĐ", "Ngày Xuất"], ["HD-2026-0022", "02/05/2026"]], n_cols=2
+    )
+    lines, _ = TableFormatter().format_grid(grid, ["Mã HĐ", "Ngày Xuất"])
+    assert lines == ["- Mã HĐ: HD-2026-0022  |  Ngày Xuất: 02/05/2026"]
+
+
+def test_a_rule_drawn_inside_one_cell_does_not_split_the_row():
+    """The invoice report boxes each wrapped cell, slicing one row into two.
+
+    Every other column keeps a single cell across the boundary, so the rule is
+    local to this column -- fusing is what stops the record being emitted twice.
+    """
+    cells = [
+        GridCell(0, 0, row_span=2, col_span=1, bbox=(0, 0, 100, 40),
+                 lines=[CellLine("HD-2026-0012", 2, 90, 5, 15)]),
+        GridCell(0, 1, 1, 1, (100, 0, 300, 20),
+                 lines=[CellLine("Thay dầu động cơ (Dầu gốc khoáng", 102, 280, 5, 15)]),
+        GridCell(1, 1, 1, 1, (100, 20, 300, 40),
+                 lines=[CellLine("Mineral)", 102, 150, 25, 35)]),
+        GridCell(0, 2, row_span=2, col_span=1, bbox=(300, 0, 400, 40),
+                 lines=[CellLine("5,500,000", 302, 390, 5, 15)]),
+    ]
+    grid = Grid(n_rows=2, n_cols=3, cells=cells, bbox=(0, 0, 400, 40))
+    lines, _ = TableFormatter().format_grid(grid)
+    assert lines == [
+        "- HD-2026-0012  |  Thay dầu động cơ (Dầu gốc khoáng Mineral)  |  5,500,000"
+    ]
+
+
 def test_flatten_never_invents_a_column_label():
     grid = _grid([["Cột 1", "Cột 2"], ["Nam", "25"]], n_cols=2)
     lines, _ = TableFormatter().format_grid(grid)

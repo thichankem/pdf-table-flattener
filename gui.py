@@ -16,7 +16,11 @@ if hasattr(sys.stderr, 'reconfigure'):
 PROJECT_ROOT = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pdf_table_tool.pipeline import SUPPORTED_SUFFIXES, PDFTableFlattenerPipeline
+from src.pdf_table_tool.pipeline import (
+    SUPPORTED_SUFFIXES,
+    PDFTableFlattenerPipeline,
+    output_suffix_for,
+)
 
 # Try to import tkinterdnd2 for drag-and-drop support
 try:
@@ -46,7 +50,7 @@ def _parse_drop_data(data: str) -> list[Path]:
 
 
 def _is_supported(path: Path) -> bool:
-    """A PDF or Word file -- Word's ``~$`` lock files are not real documents."""
+    """A PDF, Word or Excel file -- ``~$`` lock files are not real documents."""
     return (
         path.suffix.lower() in SUPPORTED_SUFFIXES
         and not path.name.startswith("~$")
@@ -103,7 +107,7 @@ class PDFFlattenerGUI:
         ttk.Label(header_frame, text="📄 PDF Table Flattener", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             header_frame,
-            text="Tự động làm phẳng toàn bộ bảng trong file PDF / Word thành dạng gạch đầu dòng (bullet points).",
+            text="Tự động làm phẳng toàn bộ bảng trong file PDF / Word / Excel thành dạng gạch đầu dòng (bullet points).",
             style="SubHeader.TLabel"
         ).pack(anchor=tk.W, pady=(1, 0))
 
@@ -111,7 +115,7 @@ class PDFFlattenerGUI:
         toolbar = ttk.Frame(main_frame)
         toolbar.pack(fill=tk.X, pady=(0, 6))
 
-        ttk.Button(toolbar, text="➕ Chọn File PDF / Word...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="➕ Chọn File PDF / Word / Excel...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="📂 Chọn Thư Mục...", command=self.add_directory).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="🗑️ Xóa Danh Sách", command=self.clear_files).pack(side=tk.LEFT)
 
@@ -134,7 +138,7 @@ class PDFFlattenerGUI:
 
             tk.Label(
                 drop_inner,
-                text="🗂️  Kéo & thả file PDF / Word hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
+                text="🗂️  Kéo & thả file PDF / Word / Excel hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
                 bg="#eff6ff",
                 fg="#2563eb",
                 font=tkFont.Font(family="Segoe UI", size=9, weight="bold"),
@@ -241,11 +245,12 @@ class PDFFlattenerGUI:
 
     def add_files(self):
         files = filedialog.askopenfilenames(
-            title="Chọn file PDF hoặc Word",
+            title="Chọn file PDF, Word hoặc Excel",
             filetypes=[
-                ("File PDF / Word", "*.pdf *.docx"),
+                ("File PDF / Word / Excel", "*.pdf *.docx *.xlsx *.xlsm"),
                 ("File PDF", "*.pdf"),
                 ("File Word", "*.docx"),
+                ("File Excel", "*.xlsx *.xlsm"),
                 ("Tất cả file", "*.*"),
             ]
         )
@@ -257,12 +262,17 @@ class PDFFlattenerGUI:
             self._update_treeview()
 
     def add_directory(self):
-        dir_path = filedialog.askdirectory(title="Chọn thư mục chứa file PDF / Word")
+        dir_path = filedialog.askdirectory(
+            title="Chọn thư mục chứa file PDF / Word / Excel"
+        )
         if not dir_path:
             return
         doc_files = _documents_in(Path(dir_path))
         if not doc_files:
-            messagebox.showinfo("Thông báo", "Không tìm thấy file PDF hoặc Word nào trong thư mục đã chọn.")
+            messagebox.showinfo(
+                "Thông báo",
+                "Không tìm thấy file PDF, Word hoặc Excel nào trong thư mục đã chọn.",
+            )
             return
         for path in doc_files:
             if path not in self.files_to_process:
@@ -299,7 +309,7 @@ class PDFFlattenerGUI:
 
     def start_processing(self):
         if not self.files_to_process:
-            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất 1 file PDF / Word để xử lý.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất 1 file PDF / Word / Excel để xử lý.")
             return
         if self.is_processing:
             return
@@ -368,9 +378,11 @@ class PDFFlattenerGUI:
         The output now keeps the input's own name, so two guards are needed:
         a file already sitting in the results folder must not be overwritten,
         and two inputs of the same name from different folders must not land on
-        top of each other.
+        top of each other.  Only the extension may differ: an Excel workbook is
+        flattened into Word, because a bullet list is not a grid of cells.
         """
-        candidate = self.output_dir / source.name
+        suffix = output_suffix_for(str(source))
+        candidate = self.output_dir / f"{source.stem}{suffix}"
         try:
             if candidate.resolve() == source.resolve():
                 return None
@@ -379,9 +391,9 @@ class PDFFlattenerGUI:
 
         if candidate.name.lower() in used_names:
             n = 2
-            while f"{source.stem} ({n}){source.suffix}".lower() in used_names:
+            while f"{source.stem} ({n}){suffix}".lower() in used_names:
                 n += 1
-            candidate = self.output_dir / f"{source.stem} ({n}){source.suffix}"
+            candidate = self.output_dir / f"{source.stem} ({n}){suffix}"
 
         used_names.add(candidate.name.lower())
         return candidate

@@ -2,6 +2,7 @@
 
 import logging
 from collections import Counter
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pdfplumber
@@ -15,6 +16,10 @@ from .verifier import VerificationReport, verify
 
 logger = logging.getLogger(__name__)
 
+# .xlsm is the same file format with macros; the macros are irrelevant to us,
+# and refusing it would only send the user back to re-save the workbook.
+EXCEL_SUFFIXES = (".xlsx", ".xlsm")
+
 
 def _outermost(tables: List[Any]) -> List[Any]:
     """Drop tables nested inside another table of the same list."""
@@ -27,9 +32,10 @@ def _outermost(tables: List[Any]) -> List[Any]:
 class PDFTableFlattenerPipeline:
     """Flattens the tables of a document.
 
-    `process` accepts a .pdf or a .docx and writes the same format back out;
-    Word files are handed to :mod:`.docx_flattener`, which shares this module's
-    formatter so both formats produce the same bullets.
+    `process` accepts a .pdf, a .docx or an Excel workbook.  A PDF and a Word
+    file are patched in place and keep their own format; a workbook has no such
+    form and comes back as Word.  All three are handed to this module's
+    formatter, so identical tables produce identical bullets.
     """
 
     def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
@@ -40,6 +46,7 @@ class PDFTableFlattenerPipeline:
         self._refiner = None
         self._classifier = None
         self._docx = None
+        self._xlsx = None
         if self.use_llm:
             from .extractors.llm_reconstructor import LLMBulletRefiner
             from .extractors.llm_structure import LLMStructureClassifier
@@ -48,7 +55,13 @@ class PDFTableFlattenerPipeline:
             self._classifier = LLMStructureClassifier()
 
     def process(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
-        if pdf_path.lower().endswith(".docx"):
+        suffix = pdf_path.lower()
+        if suffix.endswith(EXCEL_SUFFIXES):
+            # Excel is only ever written back as Word; correcting the extension
+            # here means no caller can produce a .xlsx holding a Word document.
+            output_path = str(Path(output_path).with_suffix(".docx"))
+            return self._xlsx_flattener().process(pdf_path, output_path)
+        if suffix.endswith(".docx"):
             return self._docx_flattener().process(pdf_path, output_path)
         return self._process_pdf(pdf_path, output_path)
 
@@ -61,6 +74,16 @@ class PDFTableFlattenerPipeline:
                 use_llm=self.use_llm, verify_output=self.verify_output
             )
         return self._docx
+
+    def _xlsx_flattener(self):
+        """Excel support is loaded on demand; openpyxl is only needed for it."""
+        if self._xlsx is None:
+            from .xlsx_flattener import XlsxTableFlattener
+
+            self._xlsx = XlsxTableFlattener(
+                use_llm=self.use_llm, verify_output=self.verify_output
+            )
+        return self._xlsx
 
     def _process_pdf(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
         logger.info("Processing %s", pdf_path)
@@ -200,7 +223,18 @@ class PDFTableFlattenerPipeline:
         return settings.get_font_path(serif=serif), size
 
 
-# The class handles PDF and Word alike; the old name stays for existing callers.
+# The class handles PDF, Word and Excel alike; the old name stays for existing
+# callers.
 DocumentFlattenerPipeline = PDFTableFlattenerPipeline
 
-SUPPORTED_SUFFIXES = (".pdf", ".docx")
+SUPPORTED_SUFFIXES = (".pdf", ".docx") + EXCEL_SUFFIXES
+
+
+def output_suffix_for(input_path: str) -> str:
+    """The extension the flattened output of `input_path` will carry.
+
+    A PDF and a Word file are patched in place, so they keep their own format.
+    A workbook cannot hold a bullet list, so it comes back as Word -- callers
+    that build an output name need to know that before the run starts.
+    """
+    return ".docx" if input_path.lower().endswith(EXCEL_SUFFIXES) else Path(input_path).suffix

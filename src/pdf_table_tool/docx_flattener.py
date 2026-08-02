@@ -329,14 +329,16 @@ def build_grid_from_table(
 
 
 # ---------------------------------------------------------------------------
-# header band -- the one thing Word knows and a PDF does not
+# header band -- the one thing a real document knows and a PDF does not
 # ---------------------------------------------------------------------------
 # The shared geometry rule refuses to read row 0 as a header when it merges
 # columns the rows below keep apart, because on a page that pattern is usually
 # a labelled data row and there is no way to tell.  A .docx does not have that
 # ambiguity: the author merged the cell on purpose, and Word even records which
-# rows repeat as the header of a long table.  So Word gets its own pass, run
-# *before* the shared formatter and only ever on a Word grid.
+# rows repeat as the header of a long table.  So an editable format gets its own
+# pass, run *before* the shared formatter.  Excel states both facts too (merged
+# ranges, print titles), so :mod:`.xlsx_flattener` uses this pass as well --
+# nothing below reads a Word element, only a :class:`Grid` and a row count.
 
 
 def _declared_header_rows(tbl) -> int:
@@ -372,11 +374,13 @@ def _reads_as_labels(cells: List[GridCell]) -> bool:
     return True
 
 
-def word_header_band(grid: Grid, declared: int) -> int:
-    """How many leading rows label the columns, using what Word states.
+def declared_header_band(grid: Grid, declared: int) -> int:
+    """How many leading rows label the columns, using what the source states.
 
-    Returns 0 when there is nothing Word can add -- the shared geometric rule
-    then decides on its own, exactly as it does for a PDF.
+    `declared` is the header row count the author set outright -- Word's "Repeat
+    as header row", Excel's "Rows to repeat at top".  Returns 0 when the source
+    adds nothing: the shared geometric rule then decides on its own, exactly as
+    it does for a PDF.
     """
     if grid.n_rows < 2 or grid.n_cols < 2:
         return 0
@@ -468,17 +472,17 @@ def fuse_header_band(grid: Grid, band: int) -> Grid:
     )
 
 
-def word_structure(
+def declared_header_structure(
     grid: Grid, declared: int
 ) -> Tuple[Grid, Optional[TableStructure]]:
-    """Apply what Word knows about the header band.
+    """Apply what the source states about the header band.
 
-    Returns the grid to format and, when Word had something to add, the layout
-    to format it with.  A None structure means Word knew nothing the shared
+    Returns the grid to format and, when the source had something to add, the
+    layout to format it with.  A None structure means it knew nothing the shared
     geometric rule does not already handle, so the PDF path's own analysis is
     used unchanged.
     """
-    band = word_header_band(grid, declared)
+    band = declared_header_band(grid, declared)
     if band == 0 or band <= detect_structure(grid).header_rows:
         # Geometry already found it (or there is nothing to find); leave a
         # working table alone.
@@ -516,7 +520,7 @@ def flatten_table_element(
     if grid.n_rows == 0:
         return []
 
-    grid, structure = word_structure(grid, _declared_header_rows(tbl))
+    grid, structure = declared_header_structure(grid, _declared_header_rows(tbl))
     normalised = normalise_sliced_cells(grid)
     if structure is None:
         structure = detect_structure(normalised)

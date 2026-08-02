@@ -180,6 +180,56 @@ def verify_docx(
     return report
 
 
+def verify_xlsx(
+    input_path: str,
+    output_path: str,
+    generated_lines: Optional[List[str]] = None,
+) -> VerificationReport:
+    """Check an Excel workbook against its flattened Word output.
+
+    The source side is compared as *displayed* text, not as stored values: a
+    percentage lives in the sheet as 0.291 and reaches the output as "29.1%",
+    and it is the reader's version of a cell that must survive.
+    """
+    from .xlsx_flattener import workbook_texts
+
+    report = VerificationReport()
+
+    src_tokens: Counter = Counter()
+    for text in workbook_texts(input_path):
+        src_tokens.update(tokenize(text))
+    out_tokens = _docx_tokens(output_path)
+    report.input_token_count = sum(src_tokens.values())
+    report.output_token_count = sum(out_tokens.values())
+
+    out_stream = _docx_token_stream(output_path)
+    missing = [
+        tok for tok in (src_tokens - out_tokens).elements() if tok not in out_stream
+    ]
+    if missing:
+        report.missing_tokens[0] = sorted(missing)
+
+    # Criterion 2 is trivially met here -- the writer only ever emits paragraphs
+    # -- but a stray table would still mean a bug, so it is checked all the same.
+    remaining = _docx_table_count(output_path)
+    if remaining:
+        report.residual_table_pages = list(range(1, remaining + 1))
+
+    src_text = " ".join(src_tokens.elements())
+    scope = "\n".join(generated_lines or [])
+    report.fake_labels = sorted(
+        set(FAKE_LABEL_RE.findall(scope)) - set(FAKE_LABEL_RE.findall(src_text))
+    )
+    report.stray_characters = sorted(set(STRAY_CHAR_RE.findall(scope)))
+
+    for idx in range(1, len(generated_lines or [])):
+        if not generated_lines[idx].strip() and not generated_lines[idx - 1].strip():
+            report.double_blank_lines.append(idx)
+            break
+
+    return report
+
+
 def _document_tokens(doc: fitz.Document) -> Counter:
     counter: Counter = Counter()
     for page in doc:

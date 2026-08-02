@@ -348,9 +348,27 @@ def normalise_sliced_cells(grid: Grid) -> Grid:
     Word emits faint interior rules inside a merged cell, so pdfplumber reports
     a single wrapped paragraph as three stacked one-line cells -- and the table
     then looks like three rows with two of them unlabelled.  Cells are fused
-    when they sit in the same column, touch vertically, and the upper one runs
-    to the column's right edge.
+    when they sit in the same column, touch vertically, and the boundary between
+    them is not a real row: either the upper cell runs to the column's right
+    edge, or the rule that separates them is drawn in this column alone.
     """
+    def rule_is_local(cell: GridCell, boundary: int) -> bool:
+        """Is the rule under `cell` drawn inside this column only?
+
+        A table row is ruled straight across, so every column has an edge on it.
+        A rule that no other column shares is not a row boundary at all -- it is
+        the box some generators draw around a single cell's wrapped text, which
+        otherwise splits one invoice into two rows that repeat every other
+        column's value.
+        """
+        covered = range(cell.col, cell.col + cell.col_span)
+        for other in grid.cells:
+            if other.col in covered:
+                continue
+            if other.row + other.row_span - 1 == boundary or other.row == boundary + 1:
+                return False
+        return True
+
     def splits_elsewhere(cell: GridCell, boundary: int) -> bool:
         """Does another column start a new record across this row boundary?
 
@@ -392,7 +410,7 @@ def normalise_sliced_cells(grid: Grid) -> Grid:
                 touching = abs(prev.bbox[3] - cell.bbox[1]) <= 3.0
                 if (
                     touching
-                    and _fills_column(prev)
+                    and (_fills_column(prev) or rule_is_local(prev, boundary))
                     and not splits_elsewhere(prev, boundary)
                 ):
                     run.append(cell)
@@ -488,6 +506,53 @@ def detect_structure(grid: Grid, matrix_cells=None) -> TableStructure:
     )
 
 
+def _normalise_label(value: str) -> str:
+    return " ".join((value or "").split()).strip(" :").lower()
+
+
+def _restates(detected: Sequence[str], inherited: Sequence[str]) -> bool:
+    """Does this page's own header band repeat the headers carried over?
+
+    Word repeats a table's header row on every page it spills onto, but only if
+    the author asked it to.  When it does, the band is a real header and must be
+    dropped from the data; when it does not, whatever geometry found in row 0 is
+    the page's first record.
+    """
+    found = [_normalise_label(h) for h in detected]
+    found = [h for h in found if h]
+    carried = {_normalise_label(h) for h in inherited if _normalise_label(h)}
+    if not found or not carried:
+        return False
+    hits = sum(1 for h in found if h in carried)
+    return hits * 2 >= len(found)
+
+
+def _carry_headers(
+    detected: List[str],
+    first_data_row: int,
+    inherited: Sequence[str],
+    n_cols: int,
+) -> Tuple[List[str], int]:
+    """Column labels for a table continued from the previous page.
+
+    A continuation page usually starts straight into data, with the headers left
+    behind on the page before.  Row 0 then looks exactly like a header to pure
+    geometry -- short cells, one per column, no bullets -- and every row below it
+    ends up captioned with the first invoice's own values ("HD-2026-0021: HD-
+    2026-0022").  Carrying the real headers across the page break is the only way
+    to tell the two apart, so when row 0 does not restate them it is data.
+    """
+    carried = list(inherited[:n_cols]) + [""] * max(0, n_cols - len(inherited))
+    if first_data_row and _restates(detected, inherited):
+        return detected, first_data_row
+    if first_data_row:
+        logger.info(
+            "Continuation table: row 0 is data, not a header -- reusing the "
+            "headers from the previous page."
+        )
+    return carried, 0
+
+
 class TableFormatter:
     """Renders a :class:`Grid` (plus optionally inherited headers) to bullets."""
 
@@ -511,8 +576,10 @@ class TableFormatter:
         headers, first_data_row = self._resolve_headers(
             grid, matrix_cells, structure.header_rows
         )
-        if not any(h.strip() for h in headers) and inherited_headers:
-            headers = list(inherited_headers)
+        if inherited_headers and any(h.strip() for h in inherited_headers):
+            headers, first_data_row = _carry_headers(
+                headers, first_data_row, inherited_headers, grid.n_cols
+            )
 
         label_column = structure.label_column and not any(
             h.strip() for h in headers[1:]
