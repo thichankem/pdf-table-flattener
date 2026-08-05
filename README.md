@@ -3,8 +3,16 @@
 Làm phẳng **mọi bảng** trong file PDF / Word / Excel thành gạch đầu dòng, vá
 thẳng vào đúng vị trí bảng cũ và giữ nguyên định dạng của file gốc.
 
+Mỗi bảng được đặt đúng vào hệ thống đánh số của chính tài liệu, nên một bảng dài
+cắt thành chunk ở đâu thì chunk đó vẫn tự khai nó thuộc mục nào:
+
 ```
-- Tên: Nam  |  Tuổi: 25  |  Chức vụ: Dev
+1. THUẬT NGỮ                        <- tiêu đề sẵn có trong tài liệu
+  1.1 Tên  |  Tuổi  |  Chức vụ      <- bảng nằm dưới mục 1
+      1.1.1 Tên: Nam  |  Tuổi: 25  |  Chức vụ: Dev
+      1.1.2 Tên: Lan  |  Tuổi: 30  |  Chức vụ:
+            1.1.2.1 Quản lý nhóm phát triển
+            1.1.2.2 Phụ trách tuyển dụng
 ```
 
 Người dùng cuối chỉ cần đọc [`HUONG_DAN.txt`](HUONG_DAN.txt). File này dành cho
@@ -31,7 +39,7 @@ Mọi quyết định thiết kế trong dự án đều quy về ba tiêu chí 
    không hai dòng trống liên tiếp.
 
 Ứng dụng **tự chấm điểm chính nó** theo ba tiêu chí này sau mỗi lần chạy — xem
-mục [Tự kiểm tra](#6-tự-kiểm-tra-verifierpy).
+mục [Tự kiểm tra](#7-tự-kiểm-tra-verifierpy).
 
 ---
 
@@ -56,8 +64,9 @@ python cli.py -i "duong/dan/file.pdf"
 python cli.py -i "thu_muc" -o "thu_muc_ket_qua" -v
 ```
 
-`-i` nhận cả file lẫn thư mục. `--no-verify` bỏ bước tự kiểm tra, `-v` in log
-chi tiết.
+`-i` nhận cả file lẫn thư mục. `--no-verify` bỏ bước tự kiểm tra,
+`--no-numbering` tắt đánh số phân cấp và quay lại gạch đầu dòng `-` như bản cũ,
+`-v` in log chi tiết. Trong GUI, đánh số là một ô tick (mặc định bật).
 
 ---
 
@@ -83,18 +92,20 @@ src/pdf_table_tool/
   grid_extractor.py   gán từng chữ vào đúng một ô -> Grid
   ── biến Grid thành gạch đầu dòng ───────────────────────────
   formatter.py        trái tim dùng chung của cả ba định dạng
+  outline.py          đọc tiêu đề tài liệu, đánh số phân cấp cho từng bảng
   text_utils.py       chuẩn hoá chữ, tách token, nhận diện gạch đầu dòng
   ── ghi kết quả ─────────────────────────────────────────────
   pdf_patcher.py      vá bullet vào PDF mà không cắt chữ
   text_layout.py      xuống dòng theo đúng metric của font
   docx_flattener.py   đường xử lý Word
+  docx_numbering.py   chạy lại bộ đếm danh sách của Word (số Word tự vẽ)
   xlsx_flattener.py   đường xử lý Excel
   ── phần còn lại ────────────────────────────────────────────
   verifier.py         tự chấm 3 tiêu chí trên chính đầu ra
   config.py           đường dẫn font + hằng số chữ nghĩa
   platform_support.py mọi khác biệt giữa Windows / macOS / Linux
 
-tests/                134 test
+tests/                177 test
 ```
 
 ---
@@ -241,7 +252,65 @@ Bốn điều được bảo đảm ngay tại chỗ này:
 
 ---
 
-## 6. Tự kiểm tra (`verifier.py`)
+## 6. Đánh số phân cấp cho RAG (`outline.py`)
+
+Một bảng dài bị chunker cắt ở giữa sẽ sinh ra chunk mở đầu bằng một dòng trơ
+trọi, không nói được nó thuộc mục nào của tài liệu. Module này gắn mỗi dòng vào
+đúng nhánh của tài liệu, nên cắt ở đâu chunk vẫn còn đường dẫn về mục cha.
+
+Số **không được bịa ra**: nó lấy từ hệ thống đánh số mà tài liệu vốn đã có.
+
+**Đọc tiêu đề.** `parse_heading()` nhận `1.`, `1.1`, `2.3.2.`, `3)` và cả
+`ĐIỀU 5:` — kiểu đánh số của văn bản pháp lý Việt Nam, trong đó `ĐIỀU 5` và các
+khoản `5.1`, `5.2` là cùng một cây. Chỗ khó là loại những thứ *trông giống*:
+
+| Không phải tiêu đề | Vì sao |
+| --- | --- |
+| `1.000.000 đồng` | nhóm sau dấu chấm bắt đầu bằng số 0 — đó là dấu phân cách hàng nghìn |
+| `3 Bản sao là bản sao y chứng thực` | không có dấu chấm sau số: đây là chú thích chân trang |
+| `2.1. Quyền lợi ......... 7` | có dấu chấm dẫn: dòng của mục lục, số thật nhưng vị trí không thật |
+| `Điều 8.2 quy định về tạm ứng` | sau số là số, không phải tên mục — đây là câu dẫn chiếu |
+
+Với PDF còn thêm hai tín hiệu: dòng phải **mở đầu một đoạn** (dòng trên nó không
+chạy hết lề phải, hoặc cách xa hơn giãn dòng thường), **hoặc** số phải **nối tiếp**
+tiêu đề trước đó (`1.13` ngay sau `1.12`). Chỉ một trong hai thì bỏ sót: văn bản
+căn đều hai bên làm tín hiệu hình học câm, còn tín hiệu số thì im lặng khi tài
+liệu nhảy số.
+
+**Cấp số cho bảng.** Bảng nhận số con kế tiếp của mục đang mở: dưới `2.3.1` thì
+bảng là `2.3.1.1`, dòng của nó là `2.3.1.1.1`. Mọi số mà tài liệu tự dùng ở bất
+kỳ đâu (kể cả trong mục lục) đều được **giữ chỗ trước**, nên bảng không bao giờ
+bị cấp trùng số với một tiêu đề thật ở phía dưới.
+
+Tài liệu không đánh số mục thì các bảng lần lượt là `1.`, `2.`, … và dòng của
+chúng là `1.1`, `1.2`.
+
+**Bảng dài qua nhiều trang** giữ nguyên số của nó và đếm tiếp: trang sau bắt đầu
+lại bằng dòng tên bảng kèm `(tiếp theo)` rồi chạy tiếp `3.1.7`, `3.1.8` — đúng
+thứ một chunk cần để tự đứng được một mình.
+
+**Word giấu số của chính nó** (`docx_numbering.py`). Văn bản hành chính hiếm khi
+gõ số mục vào text: tác giả tick "danh sách đánh số", Word giữ bộ đếm trong
+`numbering.xml` rồi vẽ "4." ra màn hình — đoạn văn tới tay ta chỉ còn
+`Chính sách ưu đãi`. Module này chạy lại đúng bộ đếm đó (`w:numPr` trên đoạn văn
+*hoặc* trên style, `w:abstractNum`, `w:startOverride` khi phụ lục đánh số lại từ
+đầu) nên bảng nằm dưới mục Word hiển thị là "4." được đánh số `4.1`, không phải
+một số tự nghĩ ra. Bộ đếm phải chạy qua **mọi** đoạn văn kể cả trong ô bảng,
+đúng như Word đếm, nếu không mọi mục phía sau đều lệch một số.
+
+Thứ tự ưu tiên khi đọc một đoạn văn Word: số viết thẳng trong text → số Word tự
+vẽ → cấp của style `Heading N` (tự đếm, dùng khi không còn gì khác). Excel coi
+mỗi sheet là một mục. Bảng lồng trong ô **không** được cấp số riêng — nó là nội
+dung của dòng cha, không phải một mục.
+
+Số sâu quá 6 cấp thì dòng giữ lại ký hiệu gạch đầu dòng, vì `1.2.3.4.5.6.1` không
+còn giúp ai đọc nữa.
+
+Tắt bằng `--no-numbering`, hoặc bỏ tick trong GUI.
+
+---
+
+## 7. Tự kiểm tra (`verifier.py`)
 
 Chạy trên chính đầu ra sau mỗi lần xử lý, nên lỗi hồi quy hiện ra thành báo cáo
 FAIL chứ không phải một file PDF hỏng âm thầm.
@@ -259,7 +328,7 @@ Tắt bằng `--no-verify` nếu cần chạy nhanh.
 
 ---
 
-## 7. Không dùng AI
+## 8. Không dùng AI
 
 Toàn bộ việc làm phẳng là deterministic: cùng một file luôn cho ra cùng một kết
 quả, không gọi mô hình ngôn ngữ nào, và không có byte nào của tài liệu rời khỏi
@@ -270,7 +339,7 @@ sẵn có của Word / Excel. Mọi chữ trong file kết quả đều lấy ng
 
 ---
 
-## 8. Khởi động trên cả ba hệ điều hành
+## 9. Khởi động trên cả ba hệ điều hành
 
 Launcher chỉ có một việc: tìm ra Python 3.10+ có sẵn `tkinter`. Nếu máy không
 có, nó tải `uv` từ astral.sh rồi để `uv` cài một bản Python riêng cho ứng dụng —
@@ -294,7 +363,7 @@ không ghi được, nếu không xử lý sẽ hỏng ở đúng bước cuối
 
 ---
 
-## 9. Đóng gói để gửi người khác
+## 10. Đóng gói để gửi người khác
 
 ```bash
 python tools/build_zip.py
@@ -309,7 +378,7 @@ chú thiết kế ra khỏi gói.
 
 ---
 
-## 10. Phát triển
+## 11. Phát triển
 
 ```bash
 python tools/bootstrap.py --mode setup     # chỉ cài môi trường
@@ -327,7 +396,7 @@ python tools/bootstrap.py --mode cli -- -i "file.pdf" -v
 python tools/bootstrap.py --force ...      # cài lại từ đầu
 ```
 
-Bộ test có 134 case, phần lớn dựng PDF/Word/Excel ngay trong test rồi kiểm tra
+Bộ test có 177 case, phần lớn dựng PDF/Word/Excel ngay trong test rồi kiểm tra
 đầu ra, nên chạy được mà không cần tài liệu thật:
 
 | File | Kiểm cái gì |
@@ -337,4 +406,5 @@ Bộ test có 134 case, phần lớn dựng PDF/Word/Excel ngay trong test rồi
 | `test_nested.py` | bảng lồng trong bảng |
 | `test_overflow.py` | bullet dài hơn chỗ trống, tràn sang trang phụ |
 | `test_docx.py` / `test_xlsx.py` | hai đường Word và Excel |
+| `test_numbering.py` | đọc tiêu đề, cấp số cho bảng, đánh số dòng ở cả ba định dạng |
 | `test_units.py` | các hàm nhỏ trong `text_utils`, `formatter`, `text_layout` |
