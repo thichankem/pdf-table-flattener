@@ -42,6 +42,25 @@
   PDF ra PDF, Word ra Word, Excel ra Word (vì gạch đầu dòng không phải bảng tính).
 
 
+  ĐÁNH SỐ PHÂN CẤP (ô tick trong cửa sổ, mặc định BẬT)
+-------------------------------------------------------------------------------
+
+  Mỗi bảng được đánh số theo đúng mục mà nó nằm trong tài liệu. Bảng nằm dưới
+  mục "1. THUẬT NGỮ" sẽ thành:
+
+        1.1 Thuật ngữ  |  Định nghĩa
+            1.1.1 Thuật ngữ: Bên mua bảo hiểm  |  Định nghĩa: ...
+            1.1.2 Thuật ngữ: Người được bảo hiểm  |  Định nghĩa: ...
+
+  Bảng dài chạy qua nhiều trang vẫn đếm tiếp, không đánh số lại từ đầu, và mỗi
+  trang sau đều nhắc lại tên bảng kèm chữ "(tiếp theo)".
+
+  Nhờ vậy khi đưa file vào hệ thống hỏi đáp tài liệu (RAG), cắt bảng ở chỗ nào
+  thì đoạn đó vẫn tự nói được nó thuộc mục nào.
+
+  Không thích thì bỏ tick ô này, kết quả sẽ quay lại kiểu gạch đầu dòng "-".
+
+
   TÀI LIỆU CỦA BẠN KHÔNG ĐI ĐÂU CẢ
 -------------------------------------------------------------------------------
 
@@ -83,9 +102,10 @@
   Linux   :  ./.venv/bin/python cli.py -i "duong/dan/file.pdf"
 
   Tuỳ chọn:
-    -i, --input     file hoặc thư mục đầu vào (bắt buộc)
-    -o, --output    file hoặc thư mục đầu ra
-    --no-verify     bỏ qua bước tự kiểm tra
-    -v, --verbose   in chi tiết
+    -i, --input      file hoặc thư mục đầu vào (bắt buộc)
+    -o, --output     file hoặc thư mục đầu ra
+    --no-verify      bỏ qua bước tự kiểm tra
+    --no-numbering   không đánh số phân cấp, giữ gạch đầu dòng "-"
+    -v, --verbose    in chi tiết
 
 ===============================================================================
