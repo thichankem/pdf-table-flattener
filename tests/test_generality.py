@@ -33,14 +33,18 @@ def _grid(page, x0, y0, col_w, row_h, ncols, nrows):
                        fitz.Point(x0 + c * col_w, y0 + nrows * row_h), width=0.6)
 
 
-def _run(tmp_path, name, build):
+def _run(tmp_path, name, build, numbering=False):
     src = tmp_path / (name + ".pdf")
     out = tmp_path / (name + "_flat.pdf")
     doc = fitz.open()
     build(doc)
     doc.save(src)
     doc.close()
-    summary = PDFTableFlattenerPipeline().process(str(src), str(out))
+    # What these fixtures check is which value ends up under which label; the
+    # outline numbering on top of it is :mod:`test_numbering`'s subject.
+    summary = PDFTableFlattenerPipeline(numbering=numbering).process(
+        str(src), str(out)
+    )
     return src, out, summary
 
 
