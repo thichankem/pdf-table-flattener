@@ -18,11 +18,14 @@ def _grid_table(doc, rows):
     return table
 
 
-def _run(tmp_path, doc, name="doc"):
+def _run(tmp_path, doc, name="doc", numbering=False):
     src = tmp_path / f"{name}.docx"
     out = tmp_path / f"{name}_out.docx"
     doc.save(src)
-    summary = DocxTableFlattener().process(str(src), str(out))
+    # These tests are about which cell is paired with which label, so they run
+    # without the outline numbering that :mod:`test_numbering` covers -- a "1.1"
+    # in front of every expected line would only make them harder to read.
+    summary = DocxTableFlattener(numbering=numbering).process(str(src), str(out))
     return out, summary
 
 
