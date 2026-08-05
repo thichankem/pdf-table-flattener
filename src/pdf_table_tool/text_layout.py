@@ -6,10 +6,16 @@ wrap and place lines ourselves so the caller always knows exactly how many lines
 were drawn and what is left over.
 """
 
+import re
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
 import fitz
+
+# "1.1.2 " -- the section number a numbered line opens with.  Digits are drawn
+# at the width of "0" in every font this tool embeds, so counting characters
+# measures the prefix accurately enough to hang the wrap under it.
+_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\s")
 
 
 @dataclass
@@ -31,6 +37,10 @@ def _hanging_indent(line: str) -> Tuple[float, str]:
     marker_len = 0
     if len(stripped) > 1 and stripped[0] in "-+*" and stripped[1] == " ":
         marker_len = 2
+    else:
+        number = _NUMBER_PREFIX_RE.match(stripped)
+        if number:
+            marker_len = number.end()
     return lead + marker_len, stripped
 
 
