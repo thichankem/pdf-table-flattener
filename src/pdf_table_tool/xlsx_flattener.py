@@ -33,6 +33,7 @@ from .docx_flattener import (
 )
 from .formatter import INDENT_UNIT, TableFormatter, detect_structure, normalise_sliced_cells
 from .grid_extractor import Grid, Item
+from .outline import DocumentOutline, number_table_lines
 from .text_utils import normalize_text
 
 logger = logging.getLogger(__name__)
@@ -305,12 +306,17 @@ def _add_bullet(document, line: str, size: Optional[float]) -> None:
         run.font.size = Pt(size)
 
 
-def write_docx(sheets: List[Tuple[str, List[str]]], output_path: str) -> None:
+def write_docx(
+    sheets: List[Tuple[str, List[str]]],
+    output_path: str,
+    label_sheets: Optional[bool] = None,
+) -> None:
     """One heading per sheet, then one paragraph per bullet line."""
     document = Document()
     # A single-sheet workbook needs no heading; naming it "Sheet1" would add a
     # word to the document that appears nowhere in the data.
-    label_sheets = len([s for s in sheets if s[1]]) > 1
+    if label_sheets is None:
+        label_sheets = len([s for s in sheets if s[1]]) > 1
     for name, lines in sheets:
         if not lines:
             continue
@@ -330,15 +336,21 @@ def write_docx(sheets: List[Tuple[str, List[str]]], output_path: str) -> None:
 class XlsxTableFlattener:
     """Same contract as :class:`PDFTableFlattenerPipeline`, for .xlsx files."""
 
-    def __init__(self, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True, numbering: bool = True):
         self.formatter = TableFormatter()
         self.verify_output = verify_output
+        self.numbering = numbering
 
-    def flatten_sheet(self, worksheet) -> Tuple[List[str], int]:
-        """``(bullet_lines, tables_flattened)`` for one worksheet."""
+    def sheet_lines(self, worksheet) -> List[Tuple[List[str], List[str], bool]]:
+        """One entry per block of a sheet: ``(bullets, headers, is a table)``.
+
+        The blocks stay apart because each table of a sheet is numbered on its
+        own, and because a title merged across the top is a block that is *not*
+        a table -- counting it would inflate the report and numbering it would
+        promote a caption to a section.
+        """
         anchors, covered = _merge_map(worksheet)
-        lines: List[str] = []
-        tables = 0
+        blocks: List[Tuple[List[str], List[str], bool]] = []
         for block in sheet_blocks(worksheet, anchors, covered):
             grid = build_grid_from_block(worksheet, block, anchors, covered)
             if grid.n_rows == 0:
@@ -355,14 +367,18 @@ class XlsxTableFlattener:
             if structure is None:
                 structure = detect_structure(normalised)
 
-            block_lines, _headers = self.formatter.format_grid(grid, None, structure)
+            block_lines, headers = self.formatter.format_grid(grid, None, structure)
             if block_lines:
-                lines.extend(block_lines)
-                # A title merged across the top of a sheet is its own block but
-                # it is not a table; counting it would inflate the report.
-                if grid.n_rows >= 2 and grid.n_cols >= 2:
-                    tables += 1
-        return lines, tables
+                blocks.append(
+                    (block_lines, headers, grid.n_rows >= 2 and grid.n_cols >= 2)
+                )
+        return blocks
+
+    def flatten_sheet(self, worksheet) -> Tuple[List[str], int]:
+        """``(bullet_lines, tables_flattened)`` for one worksheet, unnumbered."""
+        blocks = self.sheet_lines(worksheet)
+        lines = [line for block, _headers, _is_table in blocks for line in block]
+        return lines, sum(1 for _b, _h, is_table in blocks if is_table)
 
     def process(self, input_path: str, output_path: str) -> Dict[str, Any]:
         from openpyxl import load_workbook
@@ -372,18 +388,37 @@ class XlsxTableFlattener:
         # would put "=SUM(B2:B9)" in the output instead of the number on screen.
         workbook = load_workbook(input_path, data_only=True)
         try:
-            sheets: List[Tuple[str, List[str]]] = []
-            total_tables = 0
-            all_lines: List[str] = []
-            for worksheet in workbook.worksheets:
-                lines, tables = self.flatten_sheet(worksheet)
-                sheets.append((worksheet.title, lines))
-                total_tables += tables
-                all_lines.extend(lines)
+            read = [(ws.title, self.sheet_lines(ws)) for ws in workbook.worksheets]
         finally:
             workbook.close()
 
-        write_docx(sheets, output_path)
+        # A sheet is the outline a workbook has: it names its tables and nothing
+        # else does.  It only becomes a section when it is written out as a
+        # heading -- numbering against a heading the reader cannot see would
+        # point at nothing.
+        label_sheets = len([1 for _t, blocks in read if blocks]) > 1
+        outline = DocumentOutline()
+
+        sheets: List[Tuple[str, List[str]]] = []
+        total_tables = 0
+        all_lines: List[str] = []
+        for title, blocks in read:
+            if self.numbering and blocks and label_sheets:
+                path = outline.enter_level(0)
+                title = f"{'.'.join(str(p) for p in path)}. {title}"
+
+            lines: List[str] = []
+            for block_lines, headers, is_table in blocks:
+                if self.numbering and is_table:
+                    block_lines = number_table_lines(
+                        block_lines, outline.next_table(), headers
+                    )
+                lines.extend(block_lines)
+                total_tables += int(is_table)
+            sheets.append((title, lines))
+            all_lines.extend(lines)
+
+        write_docx(sheets, output_path, label_sheets)
 
         summary: Dict[str, Any] = {
             "input_file": input_path,
