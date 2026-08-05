@@ -564,8 +564,8 @@ class TableFormatter:
     ) -> Tuple[List[str], List[str]]:
         """Return ``(bullet_lines, headers_for_next_page)``.
 
-        `structure` overrides the geometric layout analysis -- that is the hook
-        the optional LLM classifier plugs into.
+        `structure` overrides the geometric layout analysis, which is how a
+        format that states its own header rows (Word, Excel) gets to win.
         """
         original = grid
         grid = normalise_sliced_cells(grid)

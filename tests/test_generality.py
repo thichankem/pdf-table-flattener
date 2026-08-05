@@ -40,7 +40,7 @@ def _run(tmp_path, name, build):
     build(doc)
     doc.save(src)
     doc.close()
-    summary = PDFTableFlattenerPipeline(use_llm=False).process(str(src), str(out))
+    summary = PDFTableFlattenerPipeline().process(str(src), str(out))
     return src, out, summary
 
 

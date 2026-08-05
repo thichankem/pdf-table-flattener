@@ -44,7 +44,7 @@ try:
             f"Không thể import module:\n{import_err}\n\n"
             f"Thư mục hiện tại: {THIS_DIR}\n\n"
             "Hãy đảm bảo bạn đã cài đủ dependencies:\n"
-            "  pip install pdfplumber PyMuPDF requests"
+            "  pip install pdfplumber PyMuPDF"
         )
         sys.exit(1)
 

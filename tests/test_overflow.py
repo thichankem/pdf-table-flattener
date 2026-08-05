@@ -64,7 +64,7 @@ def overflow_case(tmp_path_factory):
     src = tmp / "dense.pdf"
     out = tmp / "dense_flattened.pdf"
     _build_dense_table_pdf(src)
-    summary = PDFTableFlattenerPipeline(use_llm=False).process(str(src), str(out))
+    summary = PDFTableFlattenerPipeline().process(str(src), str(out))
     return src, out, summary
 
 
@@ -96,7 +96,7 @@ def spill_case(tmp_path_factory):
     src = tmp / "bottom.pdf"
     out = tmp / "bottom_flattened.pdf"
     _build_dense_table_pdf(src, rows=16, y0=560.0, row_h=12.0)
-    summary = PDFTableFlattenerPipeline(use_llm=False).process(str(src), str(out))
+    summary = PDFTableFlattenerPipeline().process(str(src), str(out))
     return src, out, summary
 
 

@@ -104,7 +104,7 @@ def test_a_sheet_becomes_bullets_labelled_by_its_header_row(tmp_path):
 
     src = _book(tmp_path, build)
     out = str(tmp_path / "out.docx")
-    XlsxTableFlattener(use_llm=False, verify_output=False).process(src, out)
+    XlsxTableFlattener(verify_output=False).process(src, out)
 
     assert _paragraphs(out) == [
         "- Mảng Dịch Vụ: Thay dầu động cơ  |  Số Lượng: 415  |  "
@@ -132,7 +132,7 @@ def test_a_header_merged_over_sub_labels_names_both_of_its_columns(tmp_path):
         sheet.cell(row=3, column=4).number_format = "0.0%"
 
     out = str(tmp_path / "out.docx")
-    XlsxTableFlattener(use_llm=False, verify_output=False).process(
+    XlsxTableFlattener(verify_output=False).process(
         _book(tmp_path, build), out
     )
     assert _paragraphs(out) == [
@@ -150,7 +150,7 @@ def test_print_titles_declare_the_header_band(tmp_path):
         sheet.print_title_rows = "$1:$1"
 
     out = str(tmp_path / "out.docx")
-    XlsxTableFlattener(use_llm=False, verify_output=False).process(
+    XlsxTableFlattener(verify_output=False).process(
         _book(tmp_path, build), out
     )
     assert _paragraphs(out) == [
@@ -169,7 +169,7 @@ def test_every_sheet_is_named_when_a_workbook_has_more_than_one(tmp_path):
         second.append(["X1", 10])
 
     out = str(tmp_path / "out.docx")
-    XlsxTableFlattener(use_llm=False, verify_output=False).process(
+    XlsxTableFlattener(verify_output=False).process(
         _book(tmp_path, build), out
     )
     assert _paragraphs(out) == [
@@ -188,7 +188,7 @@ def test_a_single_sheet_workbook_is_not_captioned_with_sheet1(tmp_path):
         sheet.append(["Nam", 25])
 
     out = str(tmp_path / "out.docx")
-    XlsxTableFlattener(use_llm=False, verify_output=False).process(
+    XlsxTableFlattener(verify_output=False).process(
         _book(tmp_path, build), out
     )
     assert _paragraphs(out) == ["- Tên: Nam  |  Tuổi: 25"]
@@ -206,7 +206,7 @@ def test_nothing_a_cell_shows_is_lost(tmp_path):
 
     src = _book(tmp_path, build)
     out = str(tmp_path / "out.docx")
-    summary = XlsxTableFlattener(use_llm=False).process(src, out)
+    summary = XlsxTableFlattener().process(src, out)
     assert summary["verification_passed"], summary["verification"].describe()
     assert summary["status"] == "success"
     # The merged title is a block of its own, not a table.
@@ -224,7 +224,7 @@ def test_the_pipeline_routes_excel_and_corrects_the_extension(tmp_path):
     assert ".xlsx" in SUPPORTED_SUFFIXES
 
     # A caller that asks for .xlsx must not get a Word document wearing it.
-    summary = PDFTableFlattenerPipeline(use_llm=False).process(
+    summary = PDFTableFlattenerPipeline().process(
         src, str(tmp_path / "out.xlsx")
     )
     assert summary["output_file"].endswith(".docx")
@@ -239,7 +239,7 @@ def test_a_formula_excel_never_calculated_is_reported(tmp_path):
         sheet.append(["A", 100, 3, "=B2*C2"])
 
     out = str(tmp_path / "out.docx")
-    summary = XlsxTableFlattener(use_llm=False).process(_book(tmp_path, build), out)
+    summary = XlsxTableFlattener().process(_book(tmp_path, build), out)
     assert summary["uncached_formulas"] is True
 
 
@@ -274,7 +274,7 @@ def test_a_workbook_without_formulas_raises_no_such_warning(tmp_path):
         sheet.append(["A", 100])
 
     out = str(tmp_path / "out.docx")
-    summary = XlsxTableFlattener(use_llm=False).process(_book(tmp_path, build), out)
+    summary = XlsxTableFlattener().process(_book(tmp_path, build), out)
     assert "uncached_formulas" not in summary
 
 

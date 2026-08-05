@@ -511,8 +511,6 @@ def declared_header_structure(
 def flatten_table_element(
     tbl,
     formatter: TableFormatter,
-    classifier=None,
-    refiner=None,
     styles: StyleIndex = _NO_STYLES,
 ) -> List[str]:
     """Bullet lines for one ``w:tbl`` element (nested tables included)."""
@@ -524,12 +522,8 @@ def flatten_table_element(
     normalised = normalise_sliced_cells(grid)
     if structure is None:
         structure = detect_structure(normalised)
-    if classifier is not None:
-        structure = classifier.classify(normalised, structure)
 
     lines, _headers = formatter.format_grid(grid, None, structure)
-    if refiner is not None and lines:
-        lines = refiner.refine(lines)
     return lines
 
 
@@ -642,18 +636,9 @@ def _top_level_tables(container) -> List[Any]:
 class DocxTableFlattener:
     """Same contract as :class:`PDFTableFlattenerPipeline`, for .docx files."""
 
-    def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True):
         self.formatter = TableFormatter()
         self.verify_output = verify_output
-        self.use_llm = settings.USE_LLM if use_llm is None else use_llm
-        self._refiner = None
-        self._classifier = None
-        if self.use_llm:
-            from .extractors.llm_reconstructor import LLMBulletRefiner
-            from .extractors.llm_structure import LLMStructureClassifier
-
-            self._refiner = LLMBulletRefiner()
-            self._classifier = LLMStructureClassifier()
 
     def process(self, input_path: str, output_path: str) -> Dict[str, Any]:
         logger.info("Processing %s", input_path)
@@ -674,9 +659,7 @@ class DocxTableFlattener:
                 if id(tbl) in seen:
                     continue
                 seen[id(tbl)] = tbl
-                lines = flatten_table_element(
-                    tbl, self.formatter, self._classifier, self._refiner, styles
-                )
+                lines = flatten_table_element(tbl, self.formatter, styles)
                 replace_table_with_bullets(tbl, lines, container)
                 if lines:
                     total_tables += 1

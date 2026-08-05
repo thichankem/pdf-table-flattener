@@ -21,6 +21,12 @@ import zipfile
 from pathlib import Path
 from typing import Iterator, List
 
+for _stream in (sys.stdout, sys.stderr):
+    try:  # a Windows console still defaults to cp1252, which cannot print this
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pragma: no cover - odd stream
+        pass
+
 APP_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = APP_ROOT / "dist"
 APP_NAME = "PDF-Table-Flattener"
@@ -107,7 +113,6 @@ def main() -> int:
             "requirements.txt",
             "tools/bootstrap.py",
             "tools/posix_launch.sh",
-            "tools/setup_llm.py",
         )
         if not (APP_ROOT / name).exists()
     ]

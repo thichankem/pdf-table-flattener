@@ -56,13 +56,6 @@ def main() -> int:
     )
     parser.add_argument("-o", "--output", help="File hoặc thư mục đầu ra")
     parser.add_argument(
-        "--llm",
-        action="store_true",
-        help="Dùng LLM (Ollama) để đoán cấu trúc bảng (dòng tiêu đề / cột nhãn) "
-        "và tinh chỉnh câu chữ. LLM không sinh nội dung: câu trả lời bị bỏ nếu "
-        "sai định dạng, làm mất hoặc thêm bất kỳ từ nào.",
-    )
-    parser.add_argument(
         "--no-verify", action="store_true", help="Bỏ qua bước tự kiểm tra 3 tiêu chí"
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -75,9 +68,7 @@ def main() -> int:
         print(f"Lỗi: không tìm thấy '{args.input}'.")
         return 1
 
-    pipeline = PDFTableFlattenerPipeline(
-        use_llm=args.llm, verify_output=not args.no_verify
-    )
+    pipeline = PDFTableFlattenerPipeline(verify_output=not args.no_verify)
 
     if input_path.is_file():
         if input_path.suffix.lower() not in SUPPORTED_SUFFIXES:

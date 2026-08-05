@@ -3,7 +3,7 @@
 # (START_Linux.sh).  The two wrappers differ only in what a double-click needs
 # from the desktop environment, so the actual work lives here in one copy.
 #
-# Usage: posix_launch.sh <app-root> [--mode gui|cli|llm|test|setup] [args...]
+# Usage: posix_launch.sh <app-root> [--mode gui|cli|test|setup] [args...]
 
 set -u
 

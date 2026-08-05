@@ -216,8 +216,6 @@ def launch(mode: str, extra: List[str]) -> int:
             return 0
     elif mode == "cli":
         command = [str(venv_python()), str(APP_ROOT / "cli.py"), *extra]
-    elif mode == "llm":
-        command = [str(venv_python()), str(APP_ROOT / "tools" / "setup_llm.py"), *extra]
     elif mode == "test":
         command = [str(venv_python()), "-m", "pytest", *extra]
     else:  # "setup" -- bootstrap only, no app
@@ -231,9 +229,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--mode",
         default="gui",
-        choices=["gui", "cli", "llm", "test", "setup"],
-        help="gui: mở giao diện · cli: chạy dòng lệnh · llm: cài LLM local · "
-        "setup: chỉ cài đặt",
+        choices=["gui", "cli", "test", "setup"],
+        help="gui: mở giao diện · cli: chạy dòng lệnh · setup: chỉ cài đặt",
     )
     parser.add_argument(
         "--force", action="store_true", help="Cài lại từ đầu kể cả khi đã cài rồi"

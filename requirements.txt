@@ -1,0 +1,11 @@
+# Runtime dependencies, installed into .venv by tools/bootstrap.py on first run.
+# Upper bounds are deliberate: this package gets handed to people who will not
+# be debugging a breaking release of a transitive dependency.
+pymupdf>=1.23.0,<2.0
+pdfplumber>=0.10.0,<1.0
+python-docx>=1.1.0,<2.0
+openpyxl>=3.1.0,<4.0
+
+# Drag-and-drop in the GUI. Optional -- the file picker works without it -- but
+# it ships wheels for Windows, macOS and Linux, so it installs everywhere.
+tkinterdnd2>=0.4.0

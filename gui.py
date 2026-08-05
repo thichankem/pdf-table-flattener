@@ -1,5 +1,4 @@
 import sys
-import os
 import threading
 import tkinter as tk
 import tkinter.font as tkFont
@@ -20,6 +19,11 @@ from src.pdf_table_tool.pipeline import (
     SUPPORTED_SUFFIXES,
     PDFTableFlattenerPipeline,
     output_suffix_for,
+)
+from src.pdf_table_tool.platform_support import (
+    open_folder,
+    ui_font_family,
+    writable_output_dir,
 )
 
 # Try to import tkinterdnd2 for drag-and-drop support
@@ -72,11 +76,16 @@ class PDFFlattenerGUI:
         self.style = ttk.Style()
         self.style.theme_use("clam")
 
-        font_normal  = tkFont.Font(family="Segoe UI", size=10)
-        font_header  = tkFont.Font(family="Segoe UI", size=14, weight="bold")
-        font_sub     = tkFont.Font(family="Segoe UI", size=9)
-        font_btn     = tkFont.Font(family="Segoe UI", size=11, weight="bold")
-        font_heading = tkFont.Font(family="Segoe UI", size=10, weight="bold")
+        # "Segoe UI" exists on Windows only; on macOS and Linux Tk would fall
+        # back to a face that ignores the sizes chosen here.
+        self.ui_font = ui_font_family(tkFont.families(root))
+        ui = self.ui_font
+
+        font_normal  = tkFont.Font(family=ui, size=10)
+        font_header  = tkFont.Font(family=ui, size=14, weight="bold")
+        font_sub     = tkFont.Font(family=ui, size=9)
+        font_btn     = tkFont.Font(family=ui, size=11, weight="bold")
+        font_heading = tkFont.Font(family=ui, size=10, weight="bold")
 
         self.style.configure(".",                font=font_normal)
         self.style.configure("Header.TLabel",    font=font_header,  foreground="#1e293b")
@@ -88,7 +97,10 @@ class PDFFlattenerGUI:
 
         self.files_to_process = []  # List of Path objects
         self.is_processing = False
-        self.output_dir = PROJECT_ROOT / "output_flattened"
+        # A copy unpacked under Program Files or /Applications is not writable,
+        # so results land in Documents instead of failing at the last step.
+        self.output_dir = writable_output_dir(PROJECT_ROOT / "output_flattened")
+        self.dnd_active = DND_AVAILABLE
 
         self._build_ui()
         self._setup_dnd()
@@ -119,7 +131,7 @@ class PDFFlattenerGUI:
         ttk.Button(toolbar, text="📂 Chọn Thư Mục...", command=self.add_directory).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="🗑️ Xóa Danh Sách", command=self.clear_files).pack(side=tk.LEFT)
 
-        self.lbl_count = ttk.Label(toolbar, text="Đã chọn: 0 file", font=tkFont.Font(family="Segoe UI", size=9, slant="italic"))
+        self.lbl_count = ttk.Label(toolbar, text="Đã chọn: 0 file", font=tkFont.Font(family=self.ui_font, size=9, slant="italic"))
         self.lbl_count.pack(side=tk.RIGHT, padx=4)
 
         # ── Drop Zone (shown only when DND available) ────────────────────────
@@ -141,7 +153,7 @@ class PDFFlattenerGUI:
                 text="🗂️  Kéo & thả file PDF / Word / Excel hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
                 bg="#eff6ff",
                 fg="#2563eb",
-                font=tkFont.Font(family="Segoe UI", size=9, weight="bold"),
+                font=tkFont.Font(family=self.ui_font, size=9, weight="bold"),
             ).pack()
 
         # ── File List Treeview ───────────────────────────────────────────────
@@ -190,25 +202,44 @@ class PDFFlattenerGUI:
     # ─────────────────────────────────────── DND SETUP ────────────────────────
 
     def _setup_dnd(self):
-        """Register drag-and-drop handlers if tkinterdnd2 is available."""
+        """Register drag-and-drop handlers if tkinterdnd2 is available.
+
+        Importing tkinterdnd2 is not proof that it works: the package ships a
+        Tcl extension that fails to load on plenty of macOS and Linux setups,
+        and registering then raises TclError.  Drag-and-drop is a convenience,
+        so a failure here just leaves the file picker as the way in.
+        """
         if not DND_AVAILABLE:
             return
 
         # Register both the drop zone frame and the treeview
-        for widget in (self.drop_frame, self.tree):
-            widget.drop_target_register(DND_FILES)
-            widget.dnd_bind("<<Drop>>", self._on_drop)
-            widget.dnd_bind("<<DragEnter>>", self._on_drag_enter)
-            widget.dnd_bind("<<DragLeave>>", self._on_drag_leave)
+        try:
+            for widget in (self.drop_frame, self.tree):
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_drop)
+                widget.dnd_bind("<<DragEnter>>", self._on_drag_enter)
+                widget.dnd_bind("<<DragLeave>>", self._on_drag_leave)
+        except (tk.TclError, AttributeError):
+            self.dnd_active = False
+            if hasattr(self, "drop_frame"):
+                for child in self.drop_frame.winfo_children():
+                    child.destroy()
+                tk.Label(
+                    self.drop_frame,
+                    text="Dùng nút \"Chọn File...\" hoặc \"Chọn Thư Mục...\" ở trên",
+                    bg="#eff6ff",
+                    fg="#64748b",
+                    font=tkFont.Font(family=self.ui_font, size=9),
+                ).pack()
 
     def _on_drag_enter(self, event):
-        if DND_AVAILABLE:
+        if self.dnd_active:
             self.drop_frame.config(bg="#dbeafe")
             for child in self.drop_frame.winfo_children():
                 self._set_bg_recursive(child, "#dbeafe")
 
     def _on_drag_leave(self, event):
-        if DND_AVAILABLE:
+        if self.dnd_active:
             self.drop_frame.config(bg="#eff6ff")
             for child in self.drop_frame.winfo_children():
                 self._set_bg_recursive(child, "#eff6ff")
@@ -302,8 +333,7 @@ class PDFFlattenerGUI:
         self.lbl_count.config(text=f"Đã chọn: {len(self.files_to_process)} file")
 
     def open_output_dir(self):
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(self.output_dir))
+        open_folder(self.output_dir)
 
     # ─────────────────────────────────────── PROCESSING ───────────────────────
 
@@ -324,9 +354,11 @@ class PDFFlattenerGUI:
     def _worker_process(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Building the pipeline imports pdfplumber and friends, so it is kept
+        # between runs and only paid for once.
         if self.pipeline is None:
             self.root.after(0, lambda: self.status_lbl.config(text="Đang khởi tạo..."))
-            self.pipeline = PDFTableFlattenerPipeline(use_llm=False)
+            self.pipeline = PDFTableFlattenerPipeline()
 
         total = len(self.files_to_process)
         success_count = 0
@@ -413,9 +445,15 @@ class PDFFlattenerGUI:
 
 
 def main():
+    root = None
     if DND_AVAILABLE:
-        root = TkinterDnD.Tk()
-    else:
+        # The Tcl side of tkinterdnd2 is a separate binary that is missing or
+        # mismatched often enough on macOS and Linux to be worth surviving.
+        try:
+            root = TkinterDnD.Tk()
+        except Exception:
+            root = None
+    if root is None:
         root = tk.Tk()
 
     app = PDFFlattenerGUI(root)

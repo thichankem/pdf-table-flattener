@@ -6,7 +6,6 @@ only has to be taught about in one file.
 """
 
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,15 +33,6 @@ def open_folder(path: Path) -> None:
         else:
             subprocess.run(["xdg-open", target], check=False)
     except OSError:
-        pass
-
-
-def open_url(url: str) -> None:
-    import webbrowser
-
-    try:
-        webbrowser.open(url)
-    except Exception:  # pragma: no cover - headless machine
         pass
 
 
@@ -96,86 +86,3 @@ def writable_output_dir(preferred: Path) -> Path:
         fallback = user_documents_dir() / "PDF Table Flattener" / preferred.name
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
-
-
-def ollama_executable() -> Optional[str]:
-    """Path to the ``ollama`` binary, including the spots installers use.
-
-    The macOS app bundle and the Windows per-user installer both land outside
-    the default PATH of a double-clicked launcher, so PATH alone reports "not
-    installed" on machines that plainly have it.
-    """
-    found = shutil.which("ollama")
-    if found:
-        return found
-    candidates = [
-        Path.home() / ".local/bin/ollama",
-        Path("/usr/local/bin/ollama"),
-        Path("/opt/homebrew/bin/ollama"),
-        Path("/Applications/Ollama.app/Contents/Resources/ollama"),
-        Path.home() / "AppData/Local/Programs/Ollama/ollama.exe",
-        Path("C:/Program Files/Ollama/ollama.exe"),
-    ]
-    for path in candidates:
-        try:
-            if path.is_file():
-                return str(path)
-        except OSError:
-            continue
-    return None
-
-
-def ollama_running(url: str, timeout: float = 2.0) -> bool:
-    """True when an Ollama server answers on ``url``."""
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/tags", timeout=timeout) as response:
-            return response.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-
-
-def ollama_has_model(url: str, model: str, timeout: float = 3.0) -> bool:
-    """True when ``model`` is already pulled on this machine.
-
-    A running server is not enough: asking it for a model it does not have
-    returns 404 per table, the pipeline quietly falls back, and the user is left
-    believing the LLM ran.  Checking up front is what makes the GUI's toggle
-    honest.
-    """
-    import json
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/tags", timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-    # Ollama reports "name:tag"; a bare name means the :latest tag.
-    wanted = model if ":" in model else f"{model}:latest"
-    return any(entry.get("name") == wanted for entry in payload.get("models", []))
-
-
-def start_ollama_server(executable: Optional[str] = None) -> bool:
-    """Launch ``ollama serve`` in the background; True if the spawn succeeded.
-
-    Installed but not running is the common case on Linux and on a fresh macOS
-    install, and it is a worse experience to tell the user "no LLM found" than
-    to just start the server they already have.
-    """
-    binary = executable or ollama_executable()
-    if not binary:
-        return False
-    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if IS_WINDOWS:
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    else:
-        kwargs["start_new_session"] = True
-    try:
-        subprocess.Popen([binary, "serve"], **kwargs)
-        return True
-    except OSError:
-        return False

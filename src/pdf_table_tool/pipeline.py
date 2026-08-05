@@ -38,21 +38,12 @@ class PDFTableFlattenerPipeline:
     formatter, so identical tables produce identical bullets.
     """
 
-    def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True):
         self.formatter = TableFormatter()
         self.patcher = PDFPatcher()
         self.verify_output = verify_output
-        self.use_llm = settings.USE_LLM if use_llm is None else use_llm
-        self._refiner = None
-        self._classifier = None
         self._docx = None
         self._xlsx = None
-        if self.use_llm:
-            from .extractors.llm_reconstructor import LLMBulletRefiner
-            from .extractors.llm_structure import LLMStructureClassifier
-
-            self._refiner = LLMBulletRefiner()
-            self._classifier = LLMStructureClassifier()
 
     def process(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
         suffix = pdf_path.lower()
@@ -70,9 +61,7 @@ class PDFTableFlattenerPipeline:
         if self._docx is None:
             from .docx_flattener import DocxTableFlattener
 
-            self._docx = DocxTableFlattener(
-                use_llm=self.use_llm, verify_output=self.verify_output
-            )
+            self._docx = DocxTableFlattener(verify_output=self.verify_output)
         return self._docx
 
     def _xlsx_flattener(self):
@@ -80,9 +69,7 @@ class PDFTableFlattenerPipeline:
         if self._xlsx is None:
             from .xlsx_flattener import XlsxTableFlattener
 
-            self._xlsx = XlsxTableFlattener(
-                use_llm=self.use_llm, verify_output=self.verify_output
-            )
+            self._xlsx = XlsxTableFlattener(verify_output=self.verify_output)
         return self._xlsx
 
     def _process_pdf(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
@@ -110,20 +97,14 @@ class PDFTableFlattenerPipeline:
 
                     carry = inherited_headers if info.is_continuation else None
 
-                    # Geometry decides the layout; the LLM may only correct it.
-                    # Both see the same normalised grid so their row indices
-                    # mean the same thing.
+                    # Geometry decides the layout.  Normalising first means the
+                    # detector's row indices mean the same thing as the grid's.
                     normalised = normalise_sliced_cells(grid)
                     structure = detect_structure(normalised)
-                    if self._classifier is not None:
-                        structure = self._classifier.classify(normalised, structure)
 
                     bullet_lines, headers = self.formatter.format_grid(
                         grid, carry, structure
                     )
-
-                    if self._refiner is not None:
-                        bullet_lines = self._refiner.refine(bullet_lines)
 
                     if not bullet_lines:
                         continue

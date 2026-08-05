@@ -34,7 +34,7 @@ LINE_SETTINGS = {
 
 @pytest.fixture(scope="session")
 def pipeline():
-    return PDFTableFlattenerPipeline(use_llm=False)
+    return PDFTableFlattenerPipeline()
 
 
 @pytest.fixture(scope="session")

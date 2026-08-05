@@ -22,7 +22,7 @@ def _run(tmp_path, doc, name="doc"):
     src = tmp_path / f"{name}.docx"
     out = tmp_path / f"{name}_out.docx"
     doc.save(src)
-    summary = DocxTableFlattener(use_llm=False).process(str(src), str(out))
+    summary = DocxTableFlattener().process(str(src), str(out))
     return out, summary
 
 

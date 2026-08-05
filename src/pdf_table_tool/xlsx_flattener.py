@@ -330,18 +330,9 @@ def write_docx(sheets: List[Tuple[str, List[str]]], output_path: str) -> None:
 class XlsxTableFlattener:
     """Same contract as :class:`PDFTableFlattenerPipeline`, for .xlsx files."""
 
-    def __init__(self, use_llm: Optional[bool] = None, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True):
         self.formatter = TableFormatter()
         self.verify_output = verify_output
-        self.use_llm = settings.USE_LLM if use_llm is None else use_llm
-        self._refiner = None
-        self._classifier = None
-        if self.use_llm:
-            from .extractors.llm_reconstructor import LLMBulletRefiner
-            from .extractors.llm_structure import LLMStructureClassifier
-
-            self._refiner = LLMBulletRefiner()
-            self._classifier = LLMStructureClassifier()
 
     def flatten_sheet(self, worksheet) -> Tuple[List[str], int]:
         """``(bullet_lines, tables_flattened)`` for one worksheet."""
@@ -363,12 +354,8 @@ class XlsxTableFlattener:
             normalised = normalise_sliced_cells(grid)
             if structure is None:
                 structure = detect_structure(normalised)
-            if self._classifier is not None:
-                structure = self._classifier.classify(normalised, structure)
 
             block_lines, _headers = self.formatter.format_grid(grid, None, structure)
-            if self._refiner is not None and block_lines:
-                block_lines = self._refiner.refine(block_lines)
             if block_lines:
                 lines.extend(block_lines)
                 # A title merged across the top of a sheet is its own block but

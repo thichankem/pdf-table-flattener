@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Created by the first run of tools/bootstrap.py
+assets/fonts/*.ttf
+
+# Build output
+dist/
+
+# App output
+output_flattened/

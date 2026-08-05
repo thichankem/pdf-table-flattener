@@ -9,26 +9,47 @@ class Settings:
     FONTS_DIR: Path = ASSETS_DIR / "fonts"
 
     # Unicode-capable fonts, grouped by family so the renderer can match the
-    # look of the table it replaces instead of always using one face.
+    # look of the table it replaces instead of always using one face.  The
+    # bundled copies come first: they are the only entries guaranteed to exist
+    # on every machine this is shipped to, and they render Vietnamese the same
+    # way on all three platforms.  The system paths after them are what keeps a
+    # checkout without assets/ working, so the lists cover Windows, macOS and
+    # the usual Linux font packages.
     SERIF_FONT_CANDIDATES: List[Path] = [
         FONTS_DIR / "NotoSerif-Regular.ttf",
+        # Windows
         Path("C:/Windows/Fonts/times.ttf"),
-        Path("/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"),
+        # macOS
         Path("/System/Library/Fonts/Supplemental/Times New Roman.ttf"),
+        Path("/Library/Fonts/Times New Roman.ttf"),
+        Path("/System/Library/Fonts/NewYork.ttf"),
+        # Linux
+        Path("/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf"),
+        Path("/usr/share/fonts/liberation/LiberationSerif-Regular.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSerif.ttf"),
+        Path("/usr/share/fonts/noto/NotoSerif-Regular.ttf"),
     ]
     SANS_FONT_CANDIDATES: List[Path] = [
         FONTS_DIR / "NotoSans-Regular.ttf",
+        # Windows
         Path("C:/Windows/Fonts/arial.ttf"),
         Path("C:/Windows/Fonts/segoeui.ttf"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        # macOS
         Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        Path("/Library/Fonts/Arial.ttf"),
+        Path("/System/Library/Fonts/Helvetica.ttc"),
+        # Linux
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/noto/NotoSans-Regular.ttf"),
     ]
-
-    OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
-    # LLM assistance is opt-in: the deterministic pipeline is already lossless,
-    # so the model is only ever allowed to *improve* wording, never to drop text.
-    USE_LLM: bool = os.getenv("PDF_FLATTENER_USE_LLM", "0") not in ("0", "", "false")
 
     # Bullet typography.
     BULLET_FONT_SIZE: float = 9.5
@@ -47,15 +68,31 @@ class Settings:
         return None
 
     @classmethod
+    def _any_bundled_font(cls) -> Optional[str]:
+        """Any .ttf the user dropped into assets/fonts/ themselves."""
+        try:
+            for path in sorted(cls.FONTS_DIR.glob("*.ttf")):
+                return str(path.resolve())
+        except OSError:  # pragma: no cover - unreadable mount
+            pass
+        return None
+
+    @classmethod
     def get_font_path(cls, serif: bool = True) -> str:
         primary = cls.SERIF_FONT_CANDIDATES if serif else cls.SANS_FONT_CANDIDATES
         fallback = cls.SANS_FONT_CANDIDATES if serif else cls.SERIF_FONT_CANDIDATES
-        found = cls._first_existing(primary) or cls._first_existing(fallback)
+        found = (
+            cls._first_existing(primary)
+            or cls._first_existing(fallback)
+            or cls._any_bundled_font()
+        )
         if found:
             return found
         raise RuntimeError(
-            "No Unicode TrueType font found. Place a .ttf in assets/fonts/ "
-            "(e.g. NotoSans-Regular.ttf) so Vietnamese text can be rendered."
+            "Không tìm thấy font TrueType hỗ trợ Unicode.\n"
+            f"Hãy chép một file .ttf vào {cls.FONTS_DIR} "
+            "(ví dụ NotoSans-Regular.ttf) để hiển thị được tiếng Việt.\n"
+            "Chạy lại script START_<hệ điều hành> để tự tải font Noto về."
         )
 
 

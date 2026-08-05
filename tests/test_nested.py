@@ -65,7 +65,7 @@ def nested_case(tmp_path_factory):
     src = tmp / "nested.pdf"
     out = tmp / "nested_flattened.pdf"
     _build_nested_pdf(src)
-    summary = PDFTableFlattenerPipeline(use_llm=False).process(str(src), str(out))
+    summary = PDFTableFlattenerPipeline().process(str(src), str(out))
     return src, out, summary
 
 
@@ -81,7 +81,7 @@ def test_inner_table_keeps_its_column_pairing(nested_case):
     src, _out, _summary = nested_case
     pages, _ = detect_tables_by_page(str(src))
     info = pages[0][0]
-    pipeline = PDFTableFlattenerPipeline(use_llm=False, verify_output=False)
+    pipeline = PDFTableFlattenerPipeline(verify_output=False)
     with pdfplumber.open(src) as pdf:
         page = pdf.pages[0]
         blocks = pipeline._flatten_nested(page, info)
@@ -98,7 +98,7 @@ def test_inner_bullets_are_spliced_into_the_parent_cell(nested_case):
     src, _out, _summary = nested_case
     pages, _ = detect_tables_by_page(str(src))
     info = pages[0][0]
-    pipeline = PDFTableFlattenerPipeline(use_llm=False, verify_output=False)
+    pipeline = PDFTableFlattenerPipeline(verify_output=False)
     with pdfplumber.open(src) as pdf:
         page = pdf.pages[0]
         blocks = pipeline._flatten_nested(page, info)

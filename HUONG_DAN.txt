@@ -1,0 +1,91 @@
+===============================================================================
+  PDF TABLE FLATTENER — HƯỚNG DẪN SỬ DỤNG
+  Làm phẳng mọi bảng trong file PDF / Word / Excel thành gạch đầu dòng
+===============================================================================
+
+  CÁCH CHẠY — CHỈ 2 BƯỚC
+-------------------------------------------------------------------------------
+
+  1) Giải nén toàn bộ thư mục này ra Desktop (hoặc chỗ nào bạn thích).
+     >>> QUAN TRỌNG: phải GIẢI NÉN ra, không chạy trực tiếp trong file .zip.
+
+  2) Nháy đúp chuột vào file tương ứng với máy của bạn:
+
+        Windows  ->  START_Windows.bat
+        macOS    ->  START_macOS.command
+        Linux    ->  START_Linux.sh
+
+  Xong. Cửa sổ ứng dụng sẽ hiện lên.
+
+
+  LẦN CHẠY ĐẦU TIÊN
+-------------------------------------------------------------------------------
+
+  Lần đầu tiên, ứng dụng tự cài những thứ nó cần (Python + thư viện + font).
+  Việc này CẦN INTERNET và mất khoảng 2–5 phút. Cửa sổ đen hiện chữ chạy là
+  bình thường, cứ để nó chạy xong.
+
+  Từ lần thứ hai trở đi: mở ra là chạy ngay, KHÔNG cần Internet nữa.
+
+
+  DÙNG ỨNG DỤNG
+-------------------------------------------------------------------------------
+
+  1. Bấm "Chọn File..." hoặc "Chọn Thư Mục...", hoặc kéo thả file vào cửa sổ.
+     Hỗ trợ: .pdf  .docx  .xlsx  .xlsm
+  2. Bấm nút xanh "BẮT ĐẦU LÀM PHẲNG BẢNG".
+  3. Bấm "Mở Thư Mục Kết Quả" để xem file đã xử lý.
+
+  File kết quả nằm trong thư mục "output_flattened" bên cạnh ứng dụng.
+  File gốc của bạn KHÔNG bị thay đổi.
+
+  PDF ra PDF, Word ra Word, Excel ra Word (vì gạch đầu dòng không phải bảng tính).
+
+
+  TÀI LIỆU CỦA BẠN KHÔNG ĐI ĐÂU CẢ
+-------------------------------------------------------------------------------
+
+  Ứng dụng KHÔNG dùng AI và KHÔNG gửi file của bạn lên mạng. Mọi thứ xử lý
+  ngay trên máy bạn, kể cả khi máy đang ngắt Internet.
+
+  Mọi chữ trong file kết quả đều lấy nguyên từ file gốc — không có gì được
+  thêm, bớt hay viết lại. Ứng dụng còn tự đối chiếu kết quả với bản gốc sau
+  mỗi lần chạy để chắc chắn không sót chữ nào.
+
+
+  GẶP LỖI?
+-------------------------------------------------------------------------------
+
+  ● macOS báo "cannot be opened because it is from an unidentified developer"
+    -> Bấm CHUỘT PHẢI vào START_macOS.command  ->  chọn "Open"  ->  "Open".
+       Chỉ cần làm 1 lần duy nhất.
+
+  ● Windows SmartScreen báo "Windows protected your PC"
+    -> Bấm "More info"  ->  "Run anyway".
+
+  ● Linux: nháy đúp không chạy
+    -> Mở Terminal trong thư mục này rồi gõ:
+         chmod +x START_Linux.sh
+         ./START_Linux.sh
+
+  ● Báo lỗi cài thư viện / không tải được
+    -> Kiểm tra Internet, tắt VPN, rồi chạy lại file START.
+
+  ● Muốn cài lại từ đầu
+    -> Xoá thư mục ".venv" trong thư mục ứng dụng, rồi chạy lại file START.
+
+
+  DÙNG BẰNG DÒNG LỆNH (cho người rành kỹ thuật)
+-------------------------------------------------------------------------------
+
+  Windows :  .venv\Scripts\python.exe cli.py -i "duong\dan\file.pdf"
+  macOS   :  ./.venv/bin/python cli.py -i "duong/dan/file.pdf"
+  Linux   :  ./.venv/bin/python cli.py -i "duong/dan/file.pdf"
+
+  Tuỳ chọn:
+    -i, --input     file hoặc thư mục đầu vào (bắt buộc)
+    -o, --output    file hoặc thư mục đầu ra
+    --no-verify     bỏ qua bước tự kiểm tra
+    -v, --verbose   in chi tiết
+
+===============================================================================
