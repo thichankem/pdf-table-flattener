@@ -32,7 +32,13 @@ from .formatter import (
     detect_structure,
     normalise_sliced_cells,
 )
+from .docx_numbering import ListNumbering, numbering_of
 from .grid_extractor import CellLine, Grid, GridCell, Item
+from .outline import (
+    DocumentOutline,
+    number_table_lines,
+    parse_heading,
+)
 from .text_utils import (
     bullet_marker,
     is_bullet_line,
@@ -112,6 +118,20 @@ def _paragraph_blocks(p) -> List[str]:
     return [b for b in blocks if b]
 
 
+def _outline_level(p_pr) -> Optional[int]:
+    """The heading rank one ``w:pPr`` block states, if any.
+
+    ``w:val="9"`` is Word's way of saying "body text", so only 0-8 count.
+    """
+    if p_pr is None:
+        return None
+    level = p_pr.find(qn("w:outlineLvl"))
+    if level is None:
+        return None
+    value = _int_attr(level, "w:val", 9)
+    return value if 0 <= value <= 8 else None
+
+
 def _pr_level(p_pr) -> Tuple[Optional[int], bool]:
     """``(level, is_list)`` contributed by one ``w:pPr`` block, if any."""
     if p_pr is None:
@@ -127,15 +147,24 @@ def _pr_level(p_pr) -> Tuple[Optional[int], bool]:
     return None, False
 
 
+# Word's built-in heading styles keep the same ids in every language -- the
+# *name* is translated, the id is not -- so the id is what identifies them.
+_HEADING_STYLE_RE = re.compile(r"^Heading\s*([1-9])$", re.IGNORECASE)
+
+
 class StyleIndex:
-    """What each paragraph style says about list level and indent.
+    """What each paragraph style says about list level, indent and outline rank.
 
     "List Bullet 2" carries its numbering in styles.xml, not on the paragraph,
-    so reading only ``w:pPr`` would flatten every styled list to one level.
+    so reading only ``w:pPr`` would flatten every styled list to one level.  The
+    same is true of headings: "Heading 2" is what makes a paragraph a section
+    title, and the paragraph itself says nothing about it.
     """
 
     def __init__(self, styles_element=None):
         self._levels: Dict[str, Tuple[Optional[int], bool]] = {}
+        self._outline: Dict[str, int] = {}
+        self._lists: Dict[str, Tuple[str, int]] = {}
         self._based_on: Dict[str, str] = {}
         if styles_element is None:
             return
@@ -143,7 +172,17 @@ class StyleIndex:
             style_id = style.get(qn("w:styleId"))
             if not style_id:
                 continue
-            self._levels[style_id] = _pr_level(style.find(qn("w:pPr")))
+            p_pr = style.find(qn("w:pPr"))
+            self._levels[style_id] = _pr_level(p_pr)
+            outline = _outline_level(p_pr)
+            if outline is None:
+                heading = _HEADING_STYLE_RE.match(style_id)
+                outline = int(heading.group(1)) - 1 if heading else None
+            if outline is not None:
+                self._outline[style_id] = outline
+            reference = ListNumbering.reference(p_pr) if p_pr is not None else None
+            if reference is not None and reference[0] is not None:
+                self._lists[style_id] = (reference[0], reference[1] or 0)
             based_on = style.find(qn("w:basedOn"))
             if based_on is not None and based_on.get(qn("w:val")):
                 self._based_on[style_id] = based_on.get(qn("w:val"))
@@ -157,6 +196,26 @@ class StyleIndex:
                 return level, is_list
             style_id = self._based_on.get(style_id)
         return None, False
+
+    def outline_of(self, style_id: Optional[str]) -> Optional[int]:
+        """Heading rank of a style: 0 for "Heading 1", None when it is not one."""
+        seen: set = set()
+        while style_id and style_id not in seen:
+            seen.add(style_id)
+            if style_id in self._outline:
+                return self._outline[style_id]
+            style_id = self._based_on.get(style_id)
+        return None
+
+    def list_of(self, style_id: Optional[str]) -> Optional[Tuple[str, int]]:
+        """``(numId, ilvl)`` a style carries, as "List Number" and friends do."""
+        seen: set = set()
+        while style_id and style_id not in seen:
+            seen.add(style_id)
+            if style_id in self._lists:
+                return self._lists[style_id]
+            style_id = self._based_on.get(style_id)
+        return None
 
 
 _NO_STYLES = StyleIndex()
@@ -179,6 +238,33 @@ def _paragraph_level(p, styles: StyleIndex) -> Tuple[int, bool]:
             style_id = p_style.get(qn("w:val"))
     level, is_list = styles.level_of(style_id)
     return (level or 0), is_list
+
+
+def _style_id(p) -> Optional[str]:
+    p_pr = p.find(qn("w:pPr"))
+    if p_pr is None:
+        return None
+    p_style = p_pr.find(qn("w:pStyle"))
+    return None if p_style is None else p_style.get(qn("w:val"))
+
+
+def paragraph_heading(p, styles: StyleIndex = _NO_STYLES):
+    """``(number the paragraph states, heading rank of its style)``.
+
+    Both may be present, either, or neither.  A number written into the text
+    ("1.1. Đối tượng áp dụng") is taken as it stands, exactly as the PDF path
+    reads it -- the same document must number the same way whichever format it
+    arrives in.  A heading with no number in its text is one Word draws itself,
+    and its rank is all there is to go on.
+    """
+    blocks = _paragraph_blocks(p)
+    if not blocks:
+        return None, None
+    p_pr = p.find(qn("w:pPr"))
+    rank = _outline_level(p_pr)
+    if rank is None:
+        rank = styles.outline_of(_style_id(p))
+    return parse_heading(blocks[0]), rank
 
 
 def _paragraph_items(p, styles: StyleIndex = _NO_STYLES) -> List[Item]:
@@ -512,8 +598,17 @@ def flatten_table_element(
     tbl,
     formatter: TableFormatter,
     styles: StyleIndex = _NO_STYLES,
+    outline: Optional[DocumentOutline] = None,
+    section: Optional[Tuple[int, ...]] = None,
 ) -> List[str]:
-    """Bullet lines for one ``w:tbl`` element (nested tables included)."""
+    """Bullet lines for one ``w:tbl`` element (nested tables included).
+
+    With an `outline`, the table is given its place in the document's numbering
+    and its rows are numbered under it; `section` is the branch it belongs to,
+    worked out beforehand by :func:`plan_sections`.  A table drawn inside a cell
+    is called without either: it is part of its parent's row, not a section of
+    its own.
+    """
     grid = build_grid_from_table(tbl, formatter, styles)
     if grid.n_rows == 0:
         return []
@@ -523,8 +618,61 @@ def flatten_table_element(
     if structure is None:
         structure = detect_structure(normalised)
 
-    lines, _headers = formatter.format_grid(grid, None, structure)
+    lines, headers = formatter.format_grid(grid, None, structure)
+    if outline is not None and lines:
+        # The number is taken only now: a table that turned out to be empty
+        # would otherwise leave a hole in the numbering.
+        lines = number_table_lines(lines, outline.next_table(section), headers)
     return lines
+
+
+def _follow_heading(
+    outline: DocumentOutline,
+    p,
+    styles: StyleIndex,
+    listed: Optional[Tuple[int, ...]] = None,
+) -> None:
+    """Move the outline on if this paragraph is a heading.
+
+    Three sources, in the order of how much they know:
+
+    1. a number written into the text ("1.1. Đối tượng áp dụng") -- the author
+       typed it, and it is what the PDF path would read off the page;
+    2. the number Word draws from its own list counters, which is what the
+       reader sees for a document that numbers itself;
+    3. the rank of a heading style, counted here, for a document that uses
+       Heading 1/2/3 and lets Word draw nothing at all.
+    """
+    path, rank = paragraph_heading(p, styles)
+    if path is not None:
+        outline.enter(path)
+    elif listed is not None:
+        outline.enter(listed)
+    elif rank is not None:
+        outline.enter_level(rank)
+
+
+def plan_sections(document, styles: StyleIndex, outline: DocumentOutline) -> Dict[int, Any]:
+    """Walk the body once and work out which section each table belongs to.
+
+    Word's list counters are the reason this is a pass of its own: they only
+    come out right when *every* numbered paragraph is counted in reading order,
+    including the ones inside tables, and by the time a table is being replaced
+    its own paragraphs are already gone.
+
+    Returns ``{id(table element): (element, section)}``; the element is kept so
+    lxml cannot recycle its id onto an unrelated object before it is looked up.
+    """
+    numbering = numbering_of(document)
+    plan: Dict[int, Any] = {}
+    for node in _walk(document):
+        if node.tag == qn("w:p"):
+            listed = numbering.advance(node, styles.list_of(_style_id(node)))
+            if not _inside_table(node):
+                _follow_heading(outline, node, styles, listed)
+        elif not _inside_table(node):
+            plan[id(node)] = (node, outline.section)
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -611,39 +759,59 @@ def _containers(document) -> Iterator[Any]:
                 yield part
 
 
-def _top_level_tables(container) -> List[Any]:
-    """Outermost ``w:tbl`` elements of a story, wherever they are drawn.
+def _walk(container) -> Iterator[Any]:
+    """Every paragraph and table of a story, in reading order, nesting included.
 
     ``container.tables`` only reports tables sitting directly in the story, so a
-    table inside a text box or a content control would survive untouched.  This
-    walks the whole tree instead and keeps the ones that are not themselves
-    inside a table -- those are reached through their parent.
+    table inside a text box or a content control would survive untouched; this
+    walks the whole tree instead.
     """
     element = getattr(container, "_element", None)
     if element is None:
         element = container.element
+    return element.iter(qn("w:p"), qn("w:tbl"))
 
-    tables: List[Any] = []
-    for tbl in element.iter(qn("w:tbl")):
-        parent = tbl.getparent()
-        while parent is not None and parent.tag != qn("w:tbl"):
-            parent = parent.getparent()
-        if parent is None:
-            tables.append(tbl)
-    return tables
+
+def _inside_table(node) -> bool:
+    parent = node.getparent()
+    while parent is not None:
+        if parent.tag == qn("w:tbl"):
+            return True
+        parent = parent.getparent()
+    return False
+
+
+def _blocks_in_order(container) -> Iterator[Any]:
+    """Paragraphs and outermost tables of a story, in reading order.
+
+    A table's own paragraphs are its content, and a table drawn inside a cell is
+    reached through its parent -- so both are left out here.
+
+    Reading order is what makes the headings usable: a table has to be numbered
+    under the heading that precedes it, so the two must arrive interleaved.
+    """
+    return (node for node in _walk(container) if not _inside_table(node))
 
 
 class DocxTableFlattener:
     """Same contract as :class:`PDFTableFlattenerPipeline`, for .docx files."""
 
-    def __init__(self, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True, numbering: bool = True):
         self.formatter = TableFormatter()
         self.verify_output = verify_output
+        self.numbering = numbering
 
     def process(self, input_path: str, output_path: str) -> Dict[str, Any]:
         logger.info("Processing %s", input_path)
         document = Document(input_path)
         styles = StyleIndex(document.styles.element)
+
+        outline = DocumentOutline()
+        # One pass over the whole body before anything is touched: it settles
+        # which section each table belongs to, and it reserves every number the
+        # document itself uses, so a table is never handed one that a heading
+        # further down owns.
+        plan = plan_sections(document, styles, outline) if self.numbering else {}
 
         total_tables = 0
         all_lines: List[str] = []
@@ -655,12 +823,26 @@ class DocxTableFlattener:
         for container in _containers(document):
             # Word reuses one header object across linked sections; the table
             # elements are then literally the same, so flatten them once.
-            for tbl in _top_level_tables(container):
-                if id(tbl) in seen:
+            # The list is materialised before anything is replaced: removing a
+            # table from a live tree derails an iterator still walking it, and
+            # every table after the first would be dropped.
+            for node in [n for n in _blocks_in_order(container) if n.tag == qn("w:tbl")]:
+                if id(node) in seen:
                     continue
-                seen[id(tbl)] = tbl
-                lines = flatten_table_element(tbl, self.formatter, styles)
-                replace_table_with_bullets(tbl, lines, container)
+                seen[id(node)] = node
+                # A table in a page header has no place in the document's
+                # outline, and neither has one the planning pass never saw:
+                # both are numbered as sections of their own.
+                planned = plan.get(id(node))
+                section = planned[1] if planned is not None else ()
+                lines = flatten_table_element(
+                    node,
+                    self.formatter,
+                    styles,
+                    outline if self.numbering else None,
+                    section,
+                )
+                replace_table_with_bullets(node, lines, container)
                 if lines:
                     total_tables += 1
                     all_lines.extend(lines)
