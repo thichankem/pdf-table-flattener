@@ -10,6 +10,12 @@ import pdfplumber
 from .config import settings
 from .formatter import TableFormatter, detect_structure, normalise_sliced_cells
 from .grid_extractor import build_grid
+from .outline import (
+    DocumentOutline,
+    TableNumber,
+    number_table_lines,
+    scan_pdf_outline,
+)
 from .pdf_patcher import PDFPatcher
 from .table_detector import _filter_nested, detect_tables_by_page
 from .verifier import VerificationReport, verify
@@ -36,12 +42,18 @@ class PDFTableFlattenerPipeline:
     file are patched in place and keep their own format; a workbook has no such
     form and comes back as Word.  All three are handed to this module's
     formatter, so identical tables produce identical bullets.
+
+    `numbering` puts each table on the document's own outline -- a table under
+    "1. Thuật ngữ" becomes 1.1 and its rows 1.1.1, 1.1.2 -- so a RAG chunker can
+    cut a long table anywhere and every chunk still says where it came from.
+    Turning it off restores the plain "- " bullets.
     """
 
-    def __init__(self, verify_output: bool = True):
+    def __init__(self, verify_output: bool = True, numbering: bool = True):
         self.formatter = TableFormatter()
         self.patcher = PDFPatcher()
         self.verify_output = verify_output
+        self.numbering = numbering
         self._docx = None
         self._xlsx = None
 
@@ -61,7 +73,9 @@ class PDFTableFlattenerPipeline:
         if self._docx is None:
             from .docx_flattener import DocxTableFlattener
 
-            self._docx = DocxTableFlattener(verify_output=self.verify_output)
+            self._docx = DocxTableFlattener(
+                verify_output=self.verify_output, numbering=self.numbering
+            )
         return self._docx
 
     def _xlsx_flattener(self):
@@ -69,7 +83,9 @@ class PDFTableFlattenerPipeline:
         if self._xlsx is None:
             from .xlsx_flattener import XlsxTableFlattener
 
-            self._xlsx = XlsxTableFlattener(verify_output=self.verify_output)
+            self._xlsx = XlsxTableFlattener(
+                verify_output=self.verify_output, numbering=self.numbering
+            )
         return self._xlsx
 
     def _process_pdf(self, pdf_path: str, output_path: str) -> Dict[str, Any]:
@@ -83,6 +99,21 @@ class PDFTableFlattenerPipeline:
         all_lines: List[str] = []
 
         with pdfplumber.open(pdf_path) as pdf:
+            # The document's own headings decide where each table sits, so they
+            # are read before the first table is formatted -- a heading three
+            # pages earlier still names the section this one belongs to.
+            outline = DocumentOutline()
+            if self.numbering:
+                events, known = scan_pdf_outline(
+                    pdf,
+                    {
+                        page: [info.bbox for info in infos]
+                        for page, infos in pages_with_tables.items()
+                    },
+                )
+                outline.load(events, known)
+            number: Optional[TableNumber] = None
+
             for page_num in sorted(pages_with_tables):
                 page = pdf.pages[page_num]
                 page_patches: List[Dict[str, Any]] = []
@@ -108,6 +139,18 @@ class PDFTableFlattenerPipeline:
 
                     if not bullet_lines:
                         continue
+
+                    if self.numbering:
+                        # A table split by a page break keeps the number it was
+                        # given on the page before, and its rows carry on from
+                        # where they stopped.
+                        continued = bool(info.is_continuation and number is not None)
+                        if not continued:
+                            outline.advance_to(page_num, info.bbox[1])
+                            number = outline.next_table()
+                        bullet_lines = number_table_lines(
+                            bullet_lines, number, headers, continued=continued
+                        )
 
                     font_file, font_size = self._match_typography(page, info.bbox)
                     page_patches.append(
