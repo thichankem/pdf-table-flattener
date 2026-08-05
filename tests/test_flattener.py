@@ -6,6 +6,7 @@
        two blank lines in a row.
 """
 
+import re
 from pathlib import Path
 
 import fitz
@@ -13,6 +14,32 @@ import pdfplumber
 import pytest
 
 from pdf_table_tool.pipeline import PDFTableFlattenerPipeline
+
+# A flattened line: "- Tên: Nam ..." or "2.3.1.1 Tên: Nam ..." once the table
+# has been placed on the document's own outline.
+_BULLET_RE = re.compile(r"^\s*(-\s|\d+(\.\d+)*\s)")
+
+
+def _is_bullet(line: str) -> bool:
+    return bool(_BULLET_RE.match(line))
+
+
+def _generated_lines(src_path, out_path):
+    """The lines this tool wrote: what the output has and the source did not.
+
+    Scoping the output checks this way is what keeps them about our own work --
+    the untouched pages are full of the source document's own quirks, and
+    criterion 1 forbids us from doing anything about those.
+    """
+    with fitz.open(src_path) as src:
+        original = {line for page in src for line in page.get_text().splitlines()}
+    with fitz.open(out_path) as out:
+        return [
+            line
+            for page in out
+            for line in page.get_text().splitlines()
+            if line.strip() and line not in original
+        ]
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_PDF_DIR = ROOT / "input test"
@@ -61,14 +88,25 @@ def test_criterion_1_no_content_is_lost(flattened, name):
 
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
 def test_criterion_1_non_table_pages_are_byte_identical(flattened, name):
-    """Pages the tool declared table-free must come through untouched."""
+    """Pages the tool declared table-free must come through untouched.
+
+    Bullets that do not fit their table's rectangle continue on a page inserted
+    directly after it, so an untouched page is not necessarily at the same index
+    in the output any more -- it is at that index or later, never altered.
+    """
     src_path, out_path, _summary = _case(flattened, name)
+    with pdfplumber.open(src_path) as pdf:
+        ruled = {
+            idx for idx, page in enumerate(pdf.pages) if page.find_tables(LINE_SETTINGS)
+        }
     with fitz.open(src_path) as src, fitz.open(out_path) as out:
-        for page_idx in range(min(len(src), len(out))):
-            with pdfplumber.open(src_path) as pdf:
-                if pdf.pages[page_idx].find_tables(LINE_SETTINGS):
-                    continue
-            assert src[page_idx].get_text() == out[page_idx].get_text()
+        for page_idx in range(len(src)):
+            if page_idx in ruled:
+                continue
+            text = src[page_idx].get_text()
+            assert any(
+                out[idx].get_text() == text for idx in range(page_idx, len(out))
+            ), f"trang {page_idx + 1} không còn nguyên vẹn ở đầu ra"
 
 
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
@@ -87,13 +125,15 @@ def test_criterion_2_no_table_survives(flattened, name):
 
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
 def test_criterion_2_tables_became_bullets(flattened, name):
-    """Every flattened table contributes at least one bullet line."""
-    _src, out_path, summary = _case(flattened, name)
+    """Every flattened table contributes at least one bullet line.
+
+    A line opens either with a dash or with the section number the table was
+    given on the document's outline -- both are the flattened form of a table.
+    """
+    src_path, out_path, summary = _case(flattened, name)
     if summary["total_tables_flattened"] == 0:
         pytest.skip("file has no tables")
-    with fitz.open(out_path) as out:
-        text = "\n".join(page.get_text() for page in out)
-    assert text.count("\n- ") + text.startswith("- ") >= 1
+    assert any(_is_bullet(line) for line in _generated_lines(src_path, out_path))
 
 
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
@@ -108,13 +148,10 @@ def test_criterion_3_output_is_clean(flattened, name):
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
 def test_criterion_3_rendered_text_extracts_as_plain_characters(flattened, name):
     """Bullets must copy out as real hyphens and spaces, not hidden lookalikes."""
-    _src, out_path, _summary = _case(flattened, name)
-    with fitz.open(out_path) as out:
-        for page in out:
-            for line in page.get_text().splitlines():
-                if line.lstrip().startswith("- "):
-                    assert chr(0x00AD) not in line
-                    assert chr(0x00A0) not in line
+    src_path, out_path, _summary = _case(flattened, name)
+    for line in _generated_lines(src_path, out_path):
+        assert chr(0x00AD) not in line
+        assert chr(0x00A0) not in line
 
 
 @pytest.mark.parametrize("name", [p.name for p in PDF_FILES])
