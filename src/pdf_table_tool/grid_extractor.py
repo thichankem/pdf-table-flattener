@@ -170,8 +170,12 @@ def _join_words(group: List[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
-def _group_words_into_lines(words: List[Dict[str, Any]]) -> List[CellLine]:
-    """Cluster words by baseline, then read left-to-right."""
+def group_words_into_lines(words: List[Dict[str, Any]]) -> List[CellLine]:
+    """Cluster words by baseline, then read left-to-right.
+
+    Used for a cell's own words and, by :mod:`.outline`, for the running text
+    around a table -- both need the same "what is one visual line" rule.
+    """
     if not words:
         return []
     ordered = sorted(words, key=lambda w: (round(w["top"], 1), w["x0"]))
@@ -288,7 +292,7 @@ def build_grid(
         buckets[target].append(w)
 
     for idx, cell in enumerate(grid_cells):
-        cell.lines = _group_words_into_lines(buckets[idx])
+        cell.lines = group_words_into_lines(buckets[idx])
 
     for nested_bbox, nested_lines in nested_blocks or []:
         _splice_nested_block(grid_cells, nested_bbox, nested_lines)
