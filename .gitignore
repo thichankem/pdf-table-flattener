@@ -6,7 +6,13 @@ __pycache__/
 .venv/
 venv/
 
-# Created by the first run of tools/bootstrap.py
+# Editors
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Downloaded by the first run of tools/bootstrap.py
 assets/fonts/*.ttf
 
 # Build output
@@ -14,3 +20,9 @@ dist/
 
 # App output
 output_flattened/
+
+# Local sample documents used for manual testing.  Real-world documents are
+# private, so they stay out of the repository.
+input test/
+tests/samples/
+tests/Hộ kinh doanh + CTKM/

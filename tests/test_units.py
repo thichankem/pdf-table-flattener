@@ -4,6 +4,7 @@ import fitz
 
 from pdf_table_tool.formatter import (
     TableFormatter,
+    TableStructure,
     _record_columns,
     detect_structure,
     normalise_sliced_cells,
@@ -12,12 +13,19 @@ from pdf_table_tool.formatter import (
     _label,
     cell_to_items,
 )
-from pdf_table_tool.grid_extractor import CellLine, Grid, GridCell
+from pdf_table_tool.grid_extractor import (
+    CellLine,
+    Grid,
+    GridCell,
+    group_words_into_lines,
+)
 from pdf_table_tool.text_layout import fit_plan, wrap_lines
 from pdf_table_tool.text_utils import (
     collapse_blank_lines,
     join_wrapped_lines,
     normalize_text,
+    split_inline_items,
+    starts_with_index,
     tokenize,
 )
 from pdf_table_tool.config import settings
@@ -35,13 +43,67 @@ def test_join_wrapped_lines_keeps_real_words_separate():
     assert join_wrapped_lines(["các sản", "phẩm xi măng"]) == "các sản phẩm xi măng"
 
 
+def _word(text, x0, x1, top=10.0, size=12.0):
+    return {
+        "text": text, "x0": x0, "x1": x1,
+        "top": top, "bottom": top + size, "size": size,
+    }
+
+
+def test_a_squeezed_blank_is_still_a_blank():
+    """A narrow column of justified text draws its spaces very small.
+
+    "Mục đích" at 12pt in the LPBank product tables leaves 2.65pt between the
+    two words, and "Phương thức" only 1.45pt -- a fifth of the width of the
+    Vietnamese syllables around them, which is what used to fuse them into
+    "Mụcđích" and "Phươngthức".
+    """
+    squeezed = [_word("Mục", 126.45, 149.78), _word("đích", 152.43, 173.84)]
+    assert group_words_into_lines(squeezed)[0].text == "Mục đích"
+
+    tighter = [_word("Phương", 126.45, 164.72), _word("thức", 166.17, 188.77)]
+    assert group_words_into_lines(tighter)[0].text == "Phương thức"
+
+
+def test_a_glyph_in_another_font_is_not_split_off_its_word():
+    """The minus of "-3%" is its own word only because its size differs.
+
+    Nothing was drawn between the two, so joining them with a blank would turn
+    the sign into a bullet.
+    """
+    signed = [_word("-", 100.0, 104.3, size=13.0), _word("3%", 104.3, 120.0)]
+    assert group_words_into_lines(signed)[0].text == "-3%"
+
+
 def test_normalize_text_strips_invisible_characters():
     assert normalize_text("a​b‌c d") == "abc d"
 
 
-def test_normalize_text_keeps_a_drawn_soft_hyphen_as_a_hyphen():
-    """A PDF that draws U+00AD means a hyphen; deleting it would lose a glyph."""
-    assert normalize_text("­3%") == "-3%"
+def test_normalize_text_drops_the_soft_hyphen():
+    """NORM §1.1: U+00AD marks where a line *may* break, and nothing else.
+
+    The break is gone once the wrapped line has been rejoined, so keeping it
+    would leave a hyphen in the middle of a word the reader never saw.
+    """
+    assert normalize_text("­3%") == "3%"
+    assert normalize_text("sản­xuất") == "sảnxuất"
+
+
+def test_normalize_text_writes_symbols_as_the_index_expects():
+    """NORM §1.4: no text font carries these glyphs, so they must be spelt out."""
+    assert normalize_text("HMTD ≤ 90% x GTTS") == "HMTD <= 90% x GTTS"
+    assert normalize_text("thời gian ≥ 12 tháng") == "thời gian >= 12 tháng"
+    assert normalize_text("A ≠ B, xấp xỉ ≈ 3, sai số ±2") == "A != B, xấp xỉ ~= 3, sai số +/-2"
+    assert normalize_text("2 × 3 ÷ 4") == "2 x 3 / 4"
+    assert normalize_text("Rơ – moóc") == "Rơ - moóc"
+    assert normalize_text("“Khách hàng” của Moody’s") == '"Khách hàng" của Moody\'s'
+    assert normalize_text("• mục đầu tiên") == "- mục đầu tiên"
+
+
+def test_normalize_text_folds_compatibility_forms():
+    """NORM §1.2: Equation Editor writes "Mi" as mathematical bold letters."""
+    assert normalize_text("𝐌𝐢 tối thiểu") == "Mi tối thiểu"
+    assert normalize_text("còn lại…") == "còn lại..."
 
 
 def test_collapse_blank_lines_never_leaves_two_in_a_row():
@@ -57,9 +119,19 @@ def test_fake_headers_are_recognised():
         assert not _is_fake_header(value)
 
 
+def test_the_header_of_a_row_counting_column_is_never_a_label():
+    """"STT: 1" spends tokens saying what "1" already says."""
+    for value in ("STT", "stt", "TT", "Số TT", "Số thứ tự", "No.", "Index"):
+        assert _is_fake_header(value)
+    # A column that ranks things is naming them, not counting the rows.
+    for value in ("Thứ tự phân bổ phí", "Số tiền", "Số hợp đồng"):
+        assert not _is_fake_header(value)
+
+
 def test_label_drops_redundant_and_fake_labels():
     assert _label("Điều kiện", "Điều kiện vay vốn") == "Điều kiện vay vốn"
     assert _label("Cột 1", "3.1") == "3.1"
+    assert _label("STT", "1") == "1"
     assert _label("Tuổi", "25") == "Tuổi: 25"
 
 
@@ -117,6 +189,80 @@ def test_cell_items_infer_nesting_from_bullet_indentation():
     assert [i.marker for i in items] == ["-", "+", "-"]
 
 
+def test_a_list_the_cell_wrapped_into_one_paragraph_is_broken_back_apart():
+    """"a) … b) … c) …" is three items; the column wrapped them, not the author."""
+    text = (
+        "a) Sao kê tài khoản (Bản gốc/Bản sao y). "
+        "b) Hồ sơ chứng minh nguồn gốc khoản tiền báo có. "
+        "c) Lưu ý:"
+    )
+    assert split_inline_items(text) == [
+        "a) Sao kê tài khoản (Bản gốc/Bản sao y).",
+        "b) Hồ sơ chứng minh nguồn gốc khoản tiền báo có.",
+        "c) Lưu ý:",
+    ]
+
+
+def test_a_bracket_that_happens_to_follow_a_letter_is_not_an_item():
+    """"(Bản sao y)" ends in "y)" and indexes nothing -- only a run that ascends does."""
+    assert split_inline_items("Xác nhận số dư (Bản gốc/Bản sao y) của Ngân hàng") == [
+        "Xác nhận số dư (Bản gốc/Bản sao y) của Ngân hàng"
+    ]
+
+
+def test_a_cell_carrying_a_list_on_from_the_page_before_still_splits():
+    """Two markers that ascend are enough; the a) was left overleaf."""
+    assert split_inline_items("b) Tờ khai nhập cảnh. c) Lưu ý: số tiền") == [
+        "b) Tờ khai nhập cảnh.",
+        "c) Lưu ý: số tiền",
+    ]
+
+
+def test_a_lone_marker_that_opens_a_sentence_is_an_item_too():
+    """No sibling in this cell to ascend from, but it plainly starts an item."""
+    assert split_inline_items(
+        "ĐVKD kiểm soát tiền tạm ứng theo quy định của LPBank. "
+        "b) Quy định về giải tỏa tiền tạm ứng."
+    ) == [
+        "ĐVKD kiểm soát tiền tạm ứng theo quy định của LPBank.",
+        "b) Quy định về giải tỏa tiền tạm ứng.",
+    ]
+
+
+def test_a_cross_reference_mid_sentence_is_not_an_item():
+    """Cutting "theo điểm a) khoản 2" in half is worse than the run-on it fixes."""
+    text = "Thực hiện theo điểm a) khoản 2 Điều 5 của Hợp đồng."
+    assert split_inline_items(text) == [text]
+
+
+def test_a_line_that_already_indexes_itself_gets_no_bullet():
+    """"- a)" and "- 11" index the line twice; the second one says nothing."""
+    lines = [
+        CellLine("a) Giấy tờ tùy thân của người chuyển tiền",
+                 x0=10, x1=395, top=0, bottom=10),
+        CellLine("b) Hộ chiếu còn hiệu lực", x0=10, x1=200, top=40, bottom=50),
+    ]
+    grid = Grid(
+        n_rows=2,
+        n_cols=2,
+        cells=[
+            _cell([CellLine("STT", x0=10, x1=40, top=0, bottom=10)], col=0, row=0),
+            _cell([CellLine("Hồ sơ", x0=50, x1=99, top=0, bottom=10)], col=1, row=0),
+            _cell([CellLine("11", x0=10, x1=40, top=20, bottom=30)], col=0, row=1),
+            _cell(lines, col=1, row=1),
+        ],
+        bbox=(0, 0, 400, 400),
+    )
+
+    out, _headers = TableFormatter().format_grid(grid)
+
+    assert out[0].startswith("11  |  "), out
+    assert [ln for ln in out if ln.startswith("  ")] == [
+        "  a) Giấy tờ tùy thân của người chuyển tiền",
+        "  b) Hộ chiếu còn hiệu lực",
+    ]
+
+
 # ----------------------------------------------------------------- flatten
 def _grid(rows, n_cols):
     cells = []
@@ -131,7 +277,7 @@ def _grid(rows, n_cols):
     return Grid(n_rows=len(rows), n_cols=n_cols, cells=cells, bbox=(0, 0, 400, 400))
 
 
-def test_flatten_produces_the_bullet_shape_from_test_md():
+def test_flatten_produces_the_documented_bullet_shape():
     grid = _grid(
         [["Tên", "Tuổi", "Chức vụ"], ["Nam", "25", "Dev"]], n_cols=3
     )
@@ -427,7 +573,34 @@ def test_continuation_cell_at_top_of_page_is_not_a_header():
     lines, _ = TableFormatter().format_grid(grid)
     # The carried-over sentence must not be glued in front of the real rows.
     assert sum("năm/lần" in line for line in lines) == 1
-    assert lines[-1] == "- 3.9  |  Trả nợ  |  Hàng tháng"
+    # "3.9" indexes the row itself, so it is not dashed on top of that.
+    assert lines[-1] == "3.9  |  Trả nợ  |  Hàng tháng"
+
+
+def test_a_multi_level_number_indexes_its_line_without_punctuation():
+    """"6.1" is an index and nothing else, so it needs no "." to be one."""
+    assert starts_with_index("6.1  |  Mục đích")
+    assert starts_with_index("6.1. Mục đích")
+    assert starts_with_index("3.10.2 Điều kiện")
+    # An amount is not a section number, however many dots it carries.
+    assert not starts_with_index("1.500.000 đồng cho mỗi giao dịch")
+    assert not starts_with_index("03 tháng trước thời gian chuyển tiền")
+
+
+def test_a_row_numbered_by_the_document_is_not_dashed_as_well():
+    cells = [
+        GridCell(0, 0, 1, 1, (0, 0, 80, 20), [_line("6.1", 2, 25, 5, 15)]),
+        GridCell(0, 1, 1, 1, (80, 0, 400, 20), [_line("Mục đích", 82, 140, 5, 15)]),
+        GridCell(1, 0, 1, 1, (0, 20, 80, 40), [_line("6.2", 2, 25, 25, 35)]),
+        GridCell(1, 1, 1, 1, (80, 20, 400, 40),
+                 [_line("Phương thức cấp tín dụng", 82, 240, 25, 35)]),
+    ]
+    grid = Grid(n_rows=2, n_cols=2, cells=cells, bbox=(0, 0, 400, 40))
+    lines, _ = TableFormatter().format_grid(grid, structure=TableStructure())
+    assert lines == [
+        "6.1  |  Mục đích",
+        "6.2  |  Phương thức cấp tín dụng",
+    ]
 
 
 def test_header_of_a_multi_part_cell_is_kept_on_the_caption_line():

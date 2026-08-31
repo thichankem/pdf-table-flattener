@@ -3,7 +3,7 @@
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 
@@ -13,8 +13,11 @@ from .grid_extractor import build_grid
 from .outline import (
     DocumentOutline,
     TableNumber,
+    lines_outside_tables,
     number_table_lines,
     scan_pdf_outline,
+    title_above,
+    unsaid_header_line,
 )
 from .pdf_patcher import PDFPatcher
 from .table_detector import _filter_nested, detect_tables_by_page
@@ -112,11 +115,40 @@ class PDFTableFlattenerPipeline:
                     },
                 )
                 outline.load(events, known)
+            # How many tables each section holds, counted before the first of
+            # them is numbered: a section holding just the one *is* that table
+            # and keeps its own number rather than opening a level below it.
+            # Continuations do not count -- they are the same table, further on.
+            tables_in: Dict[Tuple[int, ...], int] = {}
+            if self.numbering:
+                for page_num in sorted(pages_with_tables):
+                    for info in pages_with_tables[page_num]:
+                        if info.is_continuation:
+                            continue
+                        at = outline.section_at(page_num, info.bbox[1])
+                        tables_in[at] = tables_in.get(at, 0) + 1
             number: Optional[TableNumber] = None
+            title = ""
+            # With numbering off there is no caption line for the headers no row
+            # repeats to live on, so they get a line of their own -- written
+            # once, and not again on each of the eleven pages a long table
+            # spills onto.  Keyed by the line itself rather than by the headers
+            # it came from: header detection wobbles a little from page to page,
+            # and it is the line the reader sees twice that is the complaint.
+            headers_written: set = set()
 
             for page_num in sorted(pages_with_tables):
                 page = pdf.pages[page_num]
                 page_patches: List[Dict[str, Any]] = []
+                # The running text of the page, read once: it is where the name
+                # printed above a table is found.
+                page_lines = (
+                    lines_outside_tables(
+                        page, [info.bbox for info in pages_with_tables[page_num]]
+                    )
+                    if self.numbering
+                    else []
+                )
 
                 for info in pages_with_tables[page_num]:
                     nested_blocks = self._flatten_nested(page, info)
@@ -142,15 +174,29 @@ class PDFTableFlattenerPipeline:
 
                     if self.numbering:
                         # A table split by a page break keeps the number it was
-                        # given on the page before, and its rows carry on from
-                        # where they stopped.
+                        # given on the page before, its name, and its rows carry
+                        # on from where they stopped.
                         continued = bool(info.is_continuation and number is not None)
                         if not continued:
                             outline.advance_to(page_num, info.bbox[1])
-                            number = outline.next_table()
+                            section = outline.section
+                            number = outline.next_table(
+                                alone=tables_in.get(section) == 1
+                            )
+                            title = title_above(page_lines, info.bbox[1])
+                            # A table that took the section's own number already
+                            # has the heading above it for a name, printed under
+                            # that same number; a caption would repeat it.
+                            if number.path == section:
+                                title = ""
                         bullet_lines = number_table_lines(
-                            bullet_lines, number, headers, continued=continued
+                            bullet_lines, number, title, headers, continued=continued
                         )
+                    else:
+                        header_line = unsaid_header_line(bullet_lines, headers)
+                        if header_line and header_line not in headers_written:
+                            headers_written.add(header_line)
+                            bullet_lines = [header_line] + bullet_lines
 
                     font_file, font_size = self._match_typography(page, info.bbox)
                     page_patches.append(
@@ -262,3 +308,23 @@ def output_suffix_for(input_path: str) -> str:
     that build an output name need to know that before the run starts.
     """
     return ".docx" if input_path.lower().endswith(EXCEL_SUFFIXES) else Path(input_path).suffix
+
+
+# Marks a result file as the flattened form of its input, so the two never look
+# alike in a folder listing.
+OUTPUT_NAME_TAG = "_flattened"
+
+
+def output_stem_for(input_path: str) -> str:
+    """The input's name carrying the `_flattened` tag.
+
+    Running the tool on its own output must not stack the tag up, so a name
+    that already ends with it is left alone.
+    """
+    stem = Path(input_path).stem
+    return stem if stem.lower().endswith(OUTPUT_NAME_TAG) else stem + OUTPUT_NAME_TAG
+
+
+def output_name_for(input_path: str) -> str:
+    """The full file name -- tagged stem plus extension -- of the output."""
+    return output_stem_for(input_path) + output_suffix_for(input_path)

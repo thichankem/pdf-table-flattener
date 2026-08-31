@@ -13,6 +13,7 @@ section layout, headers/footers) is untouched.
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from docx import Document
@@ -36,8 +37,10 @@ from .docx_numbering import ListNumbering, numbering_of
 from .grid_extractor import CellLine, Grid, GridCell, Item
 from .outline import (
     DocumentOutline,
+    keep_unsaid_headers,
     number_table_lines,
     parse_heading,
+    table_title,
 )
 from .text_utils import (
     bullet_marker,
@@ -600,14 +603,17 @@ def flatten_table_element(
     styles: StyleIndex = _NO_STYLES,
     outline: Optional[DocumentOutline] = None,
     section: Optional[Tuple[int, ...]] = None,
+    title: str = "",
+    alone: bool = False,
 ) -> List[str]:
     """Bullet lines for one ``w:tbl`` element (nested tables included).
 
     With an `outline`, the table is given its place in the document's numbering
     and its rows are numbered under it; `section` is the branch it belongs to,
-    worked out beforehand by :func:`plan_sections`.  A table drawn inside a cell
-    is called without either: it is part of its parent's row, not a section of
-    its own.
+    `title` the name the paragraph above gave it and `alone` whether the section
+    holds nothing else, all worked out beforehand by :func:`plan_sections`.  A
+    table drawn inside a cell is called without any of them: it is part of its
+    parent's row, not a section of its own.
     """
     grid = build_grid_from_table(tbl, formatter, styles)
     if grid.n_rows == 0:
@@ -622,7 +628,16 @@ def flatten_table_element(
     if outline is not None and lines:
         # The number is taken only now: a table that turned out to be empty
         # would otherwise leave a hole in the numbering.
-        lines = number_table_lines(lines, outline.next_table(section), headers)
+        number = outline.next_table(section, alone)
+        # A table that took the section's own number is already named by the
+        # heading standing above it, under that very number -- captioning it
+        # here would print that line a second time.
+        named = "" if number.path == tuple(section or ()) else title
+        lines = number_table_lines(lines, number, named, headers)
+    elif lines:
+        # No caption line to carry the headers no row repeats, so they get a
+        # line of their own -- or they are lost.
+        lines = keep_unsaid_headers(lines, headers)
     return lines
 
 
@@ -652,26 +667,74 @@ def _follow_heading(
         outline.enter_level(rank)
 
 
-def plan_sections(document, styles: StyleIndex, outline: DocumentOutline) -> Dict[int, Any]:
+def _paragraph_title(p, styles: StyleIndex, listed=None) -> Optional[str]:
+    """The name this paragraph gives the table below it, or None if it is blank.
+
+    None and "" are different answers: a blank paragraph between a caption and
+    its table says nothing, so the caption above it still stands, whereas a
+    paragraph of prose has had its say and the table is left unnamed.
+
+    The last block is the one asked, because a paragraph broken by a manual line
+    break ends on the line that actually sits above the table.
+    """
+    blocks = _paragraph_blocks(p)
+    if not blocks:
+        return None
+    path, rank = paragraph_heading(p, styles)
+    # A heading is a heading whichever way this document writes one down: in the
+    # text, on a Heading style, or through a list counter Word draws itself.
+    heading = path is not None or rank is not None or listed is not None
+    return table_title(blocks[-1], heading=heading)
+
+
+@dataclass
+class TablePlan:
+    """Where one table sits, worked out before the body is touched."""
+
+    # Kept so lxml cannot recycle the element's id onto an unrelated object.
+    element: Any
+    section: Tuple[int, ...]
+    title: str
+    # The section holds this table and no other, so the table is the section.
+    alone: bool = False
+
+
+def plan_sections(
+    document, styles: StyleIndex, outline: DocumentOutline
+) -> Dict[int, TablePlan]:
     """Walk the body once and work out which section each table belongs to.
 
     Word's list counters are the reason this is a pass of its own: they only
     come out right when *every* numbered paragraph is counted in reading order,
     including the ones inside tables, and by the time a table is being replaced
-    its own paragraphs are already gone.
+    its own paragraphs are already gone.  The same walk sees the paragraph above
+    each table, which is what names it, and counts how many tables each section
+    holds -- a section holding just the one is that table (see
+    :meth:`DocumentOutline.next_table`), and that cannot be known until the last
+    table of the body has been seen.
 
-    Returns ``{id(table element): (element, section)}``; the element is kept so
-    lxml cannot recycle its id onto an unrelated object before it is looked up.
+    Returns ``{id(table element): TablePlan}``.
     """
     numbering = numbering_of(document)
-    plan: Dict[int, Any] = {}
+    plan: Dict[int, TablePlan] = {}
+    tables_in: Dict[Tuple[int, ...], int] = {}
+    title = ""
     for node in _walk(document):
         if node.tag == qn("w:p"):
             listed = numbering.advance(node, styles.list_of(_style_id(node)))
             if not _inside_table(node):
                 _follow_heading(outline, node, styles, listed)
+                said = _paragraph_title(node, styles, listed)
+                if said is not None:
+                    title = said
         elif not _inside_table(node):
-            plan[id(node)] = (node, outline.section)
+            plan[id(node)] = TablePlan(node, outline.section, title)
+            tables_in[outline.section] = tables_in.get(outline.section, 0) + 1
+            # One table does not caption the next one.
+            title = ""
+
+    for planned in plan.values():
+        planned.alone = tables_in[planned.section] == 1
     return plan
 
 
@@ -719,6 +782,12 @@ def replace_table_with_bullets(tbl, lines: List[str], container) -> None:
     added = 0
     for line in lines:
         if not line.strip():
+            # The blank line between two records earns its paragraph: it is what
+            # a chunker reads as the end of one record and the start of the
+            # next, and what keeps the list from running together on the page.
+            if added:
+                tbl.addprevious(OxmlElement("w:p"))
+                added += 1
             continue
         indent = len(line) - len(line.lstrip(" "))
         level = indent // max(1, len(INDENT_UNIT))
@@ -833,14 +902,15 @@ class DocxTableFlattener:
                 # A table in a page header has no place in the document's
                 # outline, and neither has one the planning pass never saw:
                 # both are numbered as sections of their own.
-                planned = plan.get(id(node))
-                section = planned[1] if planned is not None else ()
+                planned = plan.get(id(node)) or TablePlan(node, (), "")
                 lines = flatten_table_element(
                     node,
                     self.formatter,
                     styles,
                     outline if self.numbering else None,
-                    section,
+                    planned.section,
+                    planned.title,
+                    planned.alone,
                 )
                 replace_table_with_bullets(node, lines, container)
                 if lines:

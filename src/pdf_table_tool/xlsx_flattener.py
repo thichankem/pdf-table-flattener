@@ -33,8 +33,13 @@ from .docx_flattener import (
 )
 from .formatter import INDENT_UNIT, TableFormatter, detect_structure, normalise_sliced_cells
 from .grid_extractor import Grid, Item
-from .outline import DocumentOutline, number_table_lines
-from .text_utils import normalize_text
+from .outline import (
+    DocumentOutline,
+    keep_unsaid_headers,
+    number_table_lines,
+    table_title,
+)
+from .text_utils import is_bullet_line, normalize_text, strip_bullet
 
 logger = logging.getLogger(__name__)
 
@@ -325,9 +330,28 @@ def write_docx(
         for line in lines:
             if line.strip():
                 _add_bullet(document, line, settings.BULLET_FONT_SIZE)
+            elif document.paragraphs:
+                # The blank line between two records: where a chunker cuts, and
+                # what keeps the list from running together on the page.
+                document.add_paragraph()
     if not document.paragraphs:
         document.add_paragraph()
     document.save(output_path)
+
+
+def _block_title(lines: Sequence[str]) -> str:
+    """The name a block of loose text gives the table right below it.
+
+    A sheet has no headings, so a line standing on its own above a table is
+    exactly what a caption is here -- which is why it was read as a block of its
+    own rather than as part of the table.  The last of its lines is the one that
+    sits on the table.
+    """
+    text = next((ln for ln in reversed(lines) if ln.strip()), "")
+    text = text.strip()
+    if is_bullet_line(text):
+        text = strip_bullet(text)
+    return table_title(text, heading=True)
 
 
 # ---------------------------------------------------------------------------
@@ -407,12 +431,32 @@ class XlsxTableFlattener:
                 path = outline.enter_level(0)
                 title = f"{'.'.join(str(p) for p in path)}. {title}"
 
+            # A sheet holding a single table is that table: it keeps the sheet's
+            # own number rather than opening a level below the sheet heading.
+            alone = sum(1 for _b, _h, is_table in blocks if is_table) == 1
+
             lines: List[str] = []
+            # A line of its own above a table is the only thing a sheet has that
+            # can name it -- there are no headings to inherit from.
+            caption = ""
             for block_lines, headers, is_table in blocks:
-                if self.numbering and is_table:
-                    block_lines = number_table_lines(
-                        block_lines, outline.next_table(), headers
-                    )
+                if is_table:
+                    if self.numbering:
+                        number = outline.next_table(alone=alone)
+                        # The sheet heading above already carries that number
+                        # and the sheet's name; a caption would say it twice.
+                        if number.path == outline.section:
+                            caption = ""
+                        block_lines = number_table_lines(
+                            block_lines, number, caption, headers
+                        )
+                    else:
+                        # No caption line to carry the headers no row repeats,
+                        # so they get a line of their own -- or they are lost.
+                        block_lines = keep_unsaid_headers(block_lines, headers)
+                    caption = ""
+                else:
+                    caption = _block_title(block_lines)
                 lines.extend(block_lines)
                 total_tables += int(is_table)
             sheets.append((title, lines))

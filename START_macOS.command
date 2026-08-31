@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ===================================================================
-#  PDF Table Flattener — trình khởi chạy cho macOS
-#  Nháy đúp chuột vào file này để chạy ứng dụng.
+#  PDF Table Flattener - macOS launcher
+#  Double-click this file to run the app.
 #
-#  Nếu macOS báo "cannot be opened because it is from an unidentified
-#  developer": bấm CHUỘT PHẢI vào file → Open → Open. Chỉ cần làm 1 lần.
+#  If macOS says "cannot be opened because it is from an unidentified
+#  developer": RIGHT-CLICK the file -> Open -> Open. Once is enough.
 # ===================================================================
 set -u
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

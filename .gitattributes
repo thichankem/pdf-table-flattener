@@ -1,0 +1,20 @@
+# Normalise line endings in the repository; check out what each OS expects.
+* text=auto
+
+# Shell scripts must keep LF even on Windows: a CRLF shebang makes macOS and
+# Linux fail with "bad interpreter".
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Batch files are the mirror image: cmd.exe needs CRLF.
+*.bat       text eol=crlf
+
+*.py        text
+*.md        text
+*.toml      text
+*.yml       text
+
+*.pdf       binary
+*.docx      binary
+*.xlsx      binary
+*.ttf       binary

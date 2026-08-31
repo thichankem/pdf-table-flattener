@@ -1,6 +1,6 @@
 """Write the flattened bullets back into the PDF.
 
-Design rules that follow directly from test.md:
+Design rules that follow directly from the acceptance criteria:
 
 * Pages without tables are byte-copied -- criterion 1 is then trivially true.
 * On a table page, only the table rectangle is redacted.  Nothing else on the
@@ -13,6 +13,8 @@ Design rules that follow directly from test.md:
 """
 
 import logging
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import fitz
@@ -34,6 +36,8 @@ class PDFPatcher:
         self._charsets: Dict[str, set] = {}
         self._fonts: Dict[str, fitz.Font] = {}
         self._font_xrefs: Dict[int, str] = {}
+        # fontfile -> characters it could not draw, so each is reported once.
+        self._missing_glyphs: Dict[str, set] = {}
 
     # -- public ----------------------------------------------------------
     def process_pdf(
@@ -48,6 +52,7 @@ class PDFPatcher:
         self._charsets.clear()
         self._fonts.clear()
         self._font_xrefs.clear()
+        self._missing_glyphs.clear()
 
         src = fitz.open(pdf_path)
         out = fitz.open()
@@ -73,6 +78,10 @@ class PDFPatcher:
             if rotation:
                 page.set_rotation(0)
             obstacles = self._page_obstacles(page, [p["bbox"] for p in patches])
+            # Where every line of the page sits before anything is redacted.
+            # Redaction must not move a single one of them; see
+            # `repair_line_moves`.
+            rows = _text_rows(page)
 
             # Pass 1 -- delete the table's ruling lines.  No fill is painted and
             # no text is touched, so this rectangle may safely cover the border
@@ -85,6 +94,8 @@ class PDFPatcher:
                 graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                 text=fitz.PDF_REDACT_TEXT_NONE,
             )
+            # Before pass 2, so that pass 2 erases the table where the table is.
+            page = repair_line_moves(out, page, rows)
 
             # Pass 2 -- erase the table's text and paint the area blank.  This
             # rectangle is clamped so it can never overlap content that must
@@ -99,6 +110,7 @@ class PDFPatcher:
                 graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                 text=fitz.PDF_REDACT_TEXT_REMOVE,
             )
+            page = repair_line_moves(out, page, rows)
 
             overflow: List[str] = []
             for idx, patch in enumerate(patches):
@@ -258,6 +270,8 @@ class PDFPatcher:
 
         font_file = font_file or self.font_path
         font = fitz.Font(fontfile=font_file)
+        # Before the layout, so a substituted character is measured as drawn.
+        lines = [self._drawable(line, font, font_file) for line in lines]
         x0, top, x1, _bottom = bbox
         width = max(40.0, x1 - x0)
         height = max(10.0, lower_limit - top)
@@ -283,6 +297,33 @@ class PDFPatcher:
             len(leftover),
         )
         return leftover, True
+
+    def _drawable(self, line: str, font: fitz.Font, font_file: str) -> str:
+        """`line` with every character the render font cannot draw replaced.
+
+        A missing glyph is written as .notdef: a blank box on the page that
+        reads back as U+0000, so it fails criterion 3 while looking merely odd.
+        A full stop stands in for it -- every text font has one -- and each
+        character that needed the substitute is reported once, because a font
+        that cannot carry the document is worth knowing about rather than
+        silently working around.
+        """
+        missing = self._missing_glyphs.setdefault(font_file, set())
+        out = []
+        for char in line:
+            if char in " \t" or font.has_glyph(ord(char)):
+                out.append(char)
+                continue
+            if char not in missing:
+                missing.add(char)
+                logger.warning(
+                    "Font %s has no glyph for %r (U+%04X); drawing '.' instead.",
+                    Path(font_file).name,
+                    char,
+                    ord(char),
+                )
+            out.append(".")
+        return "".join(out)
 
     @staticmethod
     def _split_at_fit(
@@ -327,14 +368,20 @@ class PDFPatcher:
         charset = self._charsets.setdefault(font_file, set())
         self._fonts.setdefault(font_file, font)
         for placed in lines:
-            if placed.text.strip():
-                writer.append(
-                    fitz.Point(x0 + placed.indent, y),
-                    placed.text,
-                    font=font,
-                    fontsize=size,
-                )
-                charset.update(placed.text)
+            # The blank line between two records is drawn as a single space.
+            # A PDF has no line the reader cannot see: a gap with nothing in it
+            # is not extracted as a line at all, and the break that separates
+            # one record from the next would be lost to whatever reads the text
+            # back -- which, for a document written to be retrieved from, is the
+            # reader that matters most.
+            text = placed.text if placed.text.strip() else " "
+            writer.append(
+                fitz.Point(x0 + placed.indent, y),
+                text,
+                font=font,
+                fontsize=size,
+            )
+            charset.update(text)
             y += size * LEADING_RATIO
 
         before = {info[0] for info in page.get_fonts()}
@@ -411,6 +458,176 @@ class PDFPatcher:
             remaining = leftover
         logger.info("Added %d continuation page(s) for overflowing bullets.", pages_added)
         return pages_added
+
+
+# -- MuPDF's doubled line moves ------------------------------------------
+#
+# `apply_redactions` re-writes every content stream of the page through MuPDF's
+# content filter.  MuPDF 1.29 (PyMuPDF 1.28) turns a text object placed by a
+# translation-only `Tm` into `tx ty TD T*`.  `TD` also *sets the leading* to
+# -ty, so the `T*` that follows moves the line down by that same amount a second
+# time: every line of the page ends up twice as far from the origin as it
+# should.  The page then no longer matches the table rectangles measured before
+# the call -- the tool erases whatever drifted into them and leaves the table
+# text behind, one row lower.
+#
+# Only the pages of some producers are affected (a `Tm` carrying a scale is
+# written back as `Tm`), so the repair is applied only where the damage is
+# actually observed, and it is checked afterwards.  MuPDF's writer never emits
+# `TL`, and emits `T*` for no other reason, so the pair unambiguously means the
+# `Td` it should have written.
+_DOUBLED_LINE_MOVE = re.compile(rb"TD[\s]+T\*")
+# An operator is preceded by whitespace; `/TD` is a name, and `xTD` is not `TD`.
+_PDF_WHITESPACE = b" \t\r\n\f\x00"
+# A line that has to move this far to be considered moved rather than rounded.
+_MOVED_TOLERANCE = 1.0
+
+
+def _undo_doubled_line_moves(stream: bytes) -> Tuple[bytes, int]:
+    """Rewrite each `TD T*` of a content stream as the `Td` it stands for.
+
+    String literals are copied through untouched: `(TD T*)` is text a page may
+    legitimately draw, and only operators outside a string are operators.
+    """
+    out = bytearray()
+    fixed = 0
+    i, n = 0, len(stream)
+    while i < n:
+        char = stream[i]
+        if char == 0x28:  # "(" -- a literal string, copied verbatim
+            depth = 0
+            while i < n:
+                char = stream[i]
+                if char == 0x5C:  # a backslash escapes the next byte
+                    out += stream[i : i + 2]
+                    i += 2
+                    continue
+                depth += (char == 0x28) - (char == 0x29)
+                out.append(char)
+                i += 1
+                if depth == 0:
+                    break
+            continue
+        match = (
+            _DOUBLED_LINE_MOVE.match(stream, i)
+            if i and stream[i - 1] in _PDF_WHITESPACE
+            else None
+        )
+        if match:
+            # Padded to the same length, so nothing else in the stream shifts.
+            out += b"Td".ljust(match.end() - i)
+            i = match.end()
+            fixed += 1
+            continue
+        out.append(char)
+        i += 1
+    return bytes(out), fixed
+
+
+def _text_rows(page: fitz.Page) -> List[float]:
+    """The y of every text line on the page -- a fingerprint of its layout."""
+    rows = set()
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type"):
+            continue
+        for line in block.get("lines", []):
+            rows.add(round(line["bbox"][1], 1))
+    return sorted(rows)
+
+
+def _lines_off_their_row(page: fitz.Page, rows: Sequence[float]) -> int:
+    """How many text lines of `page` sit at no y they occupied in `rows`.
+
+    Redaction deletes text; it never moves any, so a single line that no longer
+    matches one of the rows recorded beforehand means the page was rewritten
+    wrongly.
+    """
+    return sum(
+        1
+        for row in _text_rows(page)
+        if not any(abs(row - was) <= _MOVED_TOLERANCE for was in rows)
+    )
+
+
+def _form_xobjects(doc: fitz.Document, xref: int) -> List[int]:
+    """The xrefs the /XObject resources of `xref` point at."""
+    try:
+        kind, value = doc.xref_get_key(xref, "Resources/XObject")
+    except Exception:  # pragma: no cover - defensive
+        return []
+    if kind == "xref":
+        value = doc.xref_object(int(value.split()[0]))
+    elif kind != "dict":
+        return []
+    return [int(num) for num in re.findall(r"(\d+)\s+0\s+R", value)]
+
+
+def _content_streams(doc: fitz.Document, page: fitz.Page) -> List[int]:
+    """Every stream the page draws from: its own contents and its forms."""
+    xrefs = list(page.get_contents())
+    seen: Set[int] = set()
+    stack = _form_xobjects(doc, page.xref)
+    while stack:
+        xref = stack.pop()
+        if xref in seen:
+            continue
+        seen.add(xref)
+        try:
+            if doc.xref_get_key(xref, "Subtype")[1] != "/Form":
+                continue
+        except Exception:  # pragma: no cover - defensive
+            continue
+        xrefs.append(xref)
+        stack.extend(_form_xobjects(doc, xref))
+    return xrefs
+
+
+def repair_line_moves(
+    doc: fitz.Document, page: fitz.Page, rows: Sequence[float]
+) -> fitz.Page:
+    """Put the page's text back on `rows` if `apply_redactions` moved it.
+
+    Returns the page to keep working with -- rewriting a stream invalidates the
+    one that was passed in.
+    """
+    if not rows or not _lines_off_their_row(page, rows):
+        return page
+
+    fixed = 0
+    for xref in _content_streams(doc, page):
+        try:
+            stream = doc.xref_stream(xref)
+        except Exception:  # pragma: no cover - defensive
+            continue
+        repaired, count = _undo_doubled_line_moves(stream)
+        if count:
+            doc.update_stream(xref, repaired, compress=True)
+            fixed += count
+    if not fixed:
+        logger.warning(
+            "Text on page %d moved during redaction and does not carry the "
+            "known defect; the page is left as MuPDF wrote it.",
+            page.number + 1,
+        )
+        return page
+
+    page = doc.reload_page(page)
+    left = _lines_off_their_row(page, rows)
+    if left:
+        logger.warning(
+            "Page %d: %d line(s) still off their original row after repairing "
+            "%d line move(s).",
+            page.number + 1,
+            left,
+            fixed,
+        )
+    else:
+        logger.info(
+            "Page %d: repaired %d line move(s) doubled by MuPDF.",
+            page.number + 1,
+            fixed,
+        )
+    return page
 
 
 def _to_page_space(

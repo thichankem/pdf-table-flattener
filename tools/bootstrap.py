@@ -27,11 +27,11 @@ from pathlib import Path
 from typing import List, Optional
 
 def _force_utf8_console() -> None:
-    """Stop a Vietnamese progress message from killing the installer.
+    """Stop a non-ASCII progress message from killing the installer.
 
     This module runs under whatever Python the machine already had, and on a
     Windows console that still means cp1252 -- where a plain ``print`` of an
-    accented word raises UnicodeEncodeError before any real work happens.
+    accented path raises UnicodeEncodeError before any real work happens.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -50,8 +50,8 @@ FONTS_DIR = APP_ROOT / "assets" / "fonts"
 
 MIN_PYTHON = (3, 10)
 
-# Bundling the fonts makes Vietnamese render identically on all three systems
-# instead of depending on whatever the machine happens to have installed.
+# Bundling the fonts makes non-Latin text render identically on all three
+# systems instead of depending on whatever the machine happens to have.
 # They are optional: config.py falls back to system fonts when absent.
 # Static instances rather than the variable-font builds: PyMuPDF embeds a
 # fixed weight, and a static file is what it handles predictably.
@@ -89,23 +89,23 @@ def venv_pythonw(venv: Path = VENV_DIR) -> Path:
 
 
 def create_venv() -> None:
-    step("Đang tạo môi trường Python riêng cho ứng dụng (.venv)")
+    step("Creating a private Python environment for the app (.venv)")
     if VENV_DIR.exists() and not venv_python().is_file():
-        log("môi trường cũ bị hỏng, tạo lại từ đầu")
+        log("the existing environment is broken, rebuilding it")
         shutil.rmtree(VENV_DIR, ignore_errors=True)
     if venv_python().is_file():
-        log("đã có sẵn, bỏ qua")
+        log("already present, skipping")
         return
     # --copies avoids symlinks, which break when the folder is moved or synced
     # through Drive/OneDrive -- exactly how this package gets passed around.
     subprocess.run(
         [sys.executable, "-m", "venv", "--copies", str(VENV_DIR)], check=True
     )
-    log(f"đã tạo {VENV_DIR}")
+    log(f"created {VENV_DIR}")
 
 
 def pip_install() -> None:
-    step("Đang cài thư viện cần thiết (chỉ lần đầu, cần Internet)")
+    step("Installing dependencies (first run only, needs Internet)")
     python = str(venv_python())
     subprocess.run(
         [python, "-m", "pip", "install", "--upgrade", "pip", "--quiet"], check=False
@@ -115,33 +115,34 @@ def pip_install() -> None:
     )
     if result.returncode != 0:
         raise SystemExit(
-            "\nKhông cài được thư viện. Hãy kiểm tra kết nối Internet rồi chạy lại.\n"
-            f"Có thể thử thủ công:\n  \"{python}\" -m pip install -r \"{REQUIREMENTS}\"\n"
+            "\nThe dependencies could not be installed. Check your Internet "
+            "connection and try again.\n"
+            f"To do it by hand:\n  \"{python}\" -m pip install -r \"{REQUIREMENTS}\"\n"
         )
-    log("xong")
+    log("done")
 
 
 # ─────────────────────────────────────────── fonts ─────────────────────────────
 
 
 def fetch_fonts() -> None:
-    step("Đang tải font tiếng Việt (Noto)")
+    step("Downloading the bundled Noto fonts")
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
     for name, url in FONT_DOWNLOADS.items():
         target = FONTS_DIR / name
         if target.is_file() and target.stat().st_size > 10_000:
-            log(f"{name}: đã có")
+            log(f"{name}: already present")
             continue
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
                 data = response.read()
             if len(data) < 10_000:
-                raise ValueError("file quá nhỏ, có thể tải hỏng")
+                raise ValueError("file too small, the download is probably broken")
             target.write_bytes(data)
-            log(f"{name}: đã tải ({len(data)//1024} KB)")
+            log(f"{name}: downloaded ({len(data)//1024} KB)")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             # Not fatal: config.py will use a system font instead.
-            log(f"{name}: bỏ qua ({exc}) — sẽ dùng font có sẵn của máy")
+            log(f"{name}: skipped ({exc}) - a system font will be used instead")
 
 
 # ─────────────────────────────────────────── run ───────────────────────────────
@@ -187,18 +188,18 @@ def bootstrap() -> None:
         return
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
-            f"Cần Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} trở lên, "
-            f"máy đang dùng {sys.version.split()[0]}."
+            f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer is required; "
+            f"this machine is running {sys.version.split()[0]}."
         )
     print("=" * 68)
-    print("  PDF Table Flattener — cài đặt lần đầu")
-    print("  Bước này chỉ chạy MỘT lần, các lần sau sẽ mở thẳng ứng dụng.")
+    print("  PDF Table Flattener - first-run setup")
+    print("  This runs ONCE; later launches go straight to the app.")
     print("=" * 68)
     create_venv()
     pip_install()
     fetch_fonts()
     write_stamp()
-    step("Cài đặt hoàn tất.")
+    step("Setup complete.")
 
 
 def launch(mode: str, extra: List[str]) -> int:
@@ -225,15 +226,15 @@ def launch(mode: str, extra: List[str]) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Cài đặt và khởi chạy ứng dụng.")
+    parser = argparse.ArgumentParser(description="Install and launch the app.")
     parser.add_argument(
         "--mode",
         default="gui",
         choices=["gui", "cli", "test", "setup"],
-        help="gui: mở giao diện · cli: chạy dòng lệnh · setup: chỉ cài đặt",
+        help="gui: open the interface | cli: command line | setup: install only",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Cài lại từ đầu kể cả khi đã cài rồi"
+        "--force", action="store_true", help="Reinstall from scratch"
     )
     args, extra = parser.parse_known_args(argv)
     # `--mode cli -- -i file.pdf` is the natural way to pass through flags that
@@ -247,7 +248,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         bootstrap()
     except subprocess.CalledProcessError as exc:
-        print(f"\nLỗi khi cài đặt: {exc}", file=sys.stderr)
+        print(f"\nSetup failed: {exc}", file=sys.stderr)
         return 1
     return launch(args.mode, extra)
 

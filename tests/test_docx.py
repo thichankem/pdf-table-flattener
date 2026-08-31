@@ -213,8 +213,9 @@ def test_multi_paragraph_cell_becomes_indented_sub_bullets(tmp_path):
     lines = [p for p in document.paragraphs if p.text.strip()]
 
     assert lines[0].text == "- Điều kiện: Vay vốn  |  Nội dung:"
+    # One glyph at every depth: what says how deep a line sits is its indent.
     assert [p.text for p in lines[1:]] == [
-        "+ Khách hàng phải đáp ứng:",
+        "- Khách hàng phải đáp ứng:",
         "- Có tài sản bảo đảm",
         "- Không có nợ xấu",
     ]

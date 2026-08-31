@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.pdf_table_tool.pipeline import (
     SUPPORTED_SUFFIXES,
     PDFTableFlattenerPipeline,
+    output_stem_for,
     output_suffix_for,
 )
 from src.pdf_table_tool.platform_support import (
@@ -68,7 +69,7 @@ def _documents_in(directory: Path) -> list[Path]:
 class PDFFlattenerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Table Flattener - Làm phẳng Bảng PDF")
+        self.root.title("PDF Table Flattener")
         self.root.geometry("820x660")
         self.root.minsize(720, 520)
 
@@ -119,7 +120,7 @@ class PDFFlattenerGUI:
         ttk.Label(header_frame, text="📄 PDF Table Flattener", style="Header.TLabel").pack(anchor=tk.W)
         ttk.Label(
             header_frame,
-            text="Tự động làm phẳng toàn bộ bảng trong file PDF / Word / Excel thành dạng gạch đầu dòng (bullet points).",
+            text="Turn every table in a PDF, Word or Excel document into flat bullet points.",
             style="SubHeader.TLabel"
         ).pack(anchor=tk.W, pady=(1, 0))
 
@@ -127,11 +128,11 @@ class PDFFlattenerGUI:
         toolbar = ttk.Frame(main_frame)
         toolbar.pack(fill=tk.X, pady=(0, 6))
 
-        ttk.Button(toolbar, text="➕ Chọn File PDF / Word / Excel...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="📂 Chọn Thư Mục...", command=self.add_directory).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="🗑️ Xóa Danh Sách", command=self.clear_files).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="➕ Add Files...", command=self.add_files).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="📂 Add Folder...", command=self.add_directory).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="🗑️ Clear List", command=self.clear_files).pack(side=tk.LEFT)
 
-        self.lbl_count = ttk.Label(toolbar, text="Đã chọn: 0 file", font=tkFont.Font(family=self.ui_font, size=9, slant="italic"))
+        self.lbl_count = ttk.Label(toolbar, text="0 files selected", font=tkFont.Font(family=self.ui_font, size=9, slant="italic"))
         self.lbl_count.pack(side=tk.RIGHT, padx=4)
 
         # ── Drop Zone (shown only when DND available) ────────────────────────
@@ -150,7 +151,7 @@ class PDFFlattenerGUI:
 
             tk.Label(
                 drop_inner,
-                text="🗂️  Kéo & thả file PDF / Word / Excel hoặc thư mục vào đây (hoặc vào danh sách bên dưới)",
+                text="🗂️  Drop PDF / Word / Excel files or a folder here (or onto the list below)",
                 bg="#eff6ff",
                 fg="#2563eb",
                 font=tkFont.Font(family=self.ui_font, size=9, weight="bold"),
@@ -162,9 +163,9 @@ class PDFFlattenerGUI:
 
         columns = ("name", "size", "status")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended")
-        self.tree.heading("name",   text="Tên File",      anchor=tk.W)
-        self.tree.heading("size",   text="Dung lượng",   anchor=tk.CENTER)
-        self.tree.heading("status", text="Trạng thái",   anchor=tk.CENTER)
+        self.tree.heading("name",   text="File",     anchor=tk.W)
+        self.tree.heading("size",   text="Size",     anchor=tk.CENTER)
+        self.tree.heading("status", text="Status",   anchor=tk.CENTER)
 
         self.tree.column("name",   width=400, minwidth=200, anchor=tk.W,      stretch=True)
         self.tree.column("size",   width=100, minwidth=80,  anchor=tk.CENTER, stretch=False)
@@ -175,6 +176,17 @@ class PDFFlattenerGUI:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # ── Options ──────────────────────────────────────────────────────────
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill=tk.X, pady=(0, 8))
+
+        self.numbering_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            options_frame,
+            text="Number bullets after the document outline (1.1, 1.1.1) - better RAG chunking",
+            variable=self.numbering_var,
+        ).pack(anchor=tk.W)
+
         # ── Progress ─────────────────────────────────────────────────────────
         progress_frame = ttk.Frame(main_frame)
         progress_frame.pack(fill=tk.X, pady=(0, 12))
@@ -182,7 +194,7 @@ class PDFFlattenerGUI:
         self.progress_bar = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, mode="determinate")
         self.progress_bar.pack(fill=tk.X, pady=(0, 4))
 
-        self.status_lbl = ttk.Label(progress_frame, text="Sẵn sàng xử lý.")
+        self.status_lbl = ttk.Label(progress_frame, text="Ready.")
         self.status_lbl.pack(anchor=tk.W)
 
         # ── Action Buttons ───────────────────────────────────────────────────
@@ -191,13 +203,13 @@ class PDFFlattenerGUI:
 
         self.btn_run = ttk.Button(
             action_frame,
-            text="🚀 BẮT ĐẦU LÀM PHẲNG BẢNG",
+            text="🚀 FLATTEN TABLES",
             style="Accent.TButton",
             command=self.start_processing,
         )
         self.btn_run.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=6)
 
-        ttk.Button(action_frame, text="📂 Mở Thư Mục Kết Quả", command=self.open_output_dir).pack(side=tk.RIGHT, ipady=6)
+        ttk.Button(action_frame, text="📂 Open Output Folder", command=self.open_output_dir).pack(side=tk.RIGHT, ipady=6)
 
     # ─────────────────────────────────────── DND SETUP ────────────────────────
 
@@ -226,7 +238,7 @@ class PDFFlattenerGUI:
                     child.destroy()
                 tk.Label(
                     self.drop_frame,
-                    text="Dùng nút \"Chọn File...\" hoặc \"Chọn Thư Mục...\" ở trên",
+                    text="Use the \"Add Files...\" or \"Add Folder...\" buttons above",
                     bg="#eff6ff",
                     fg="#64748b",
                     font=tkFont.Font(family=self.ui_font, size=9),
@@ -270,19 +282,19 @@ class PDFFlattenerGUI:
 
         if added:
             self._update_treeview()
-            self.status_lbl.config(text=f"Đã thêm {added} file qua kéo thả.")
+            self.status_lbl.config(text=f"Added {added} file(s) by drag and drop.")
 
     # ─────────────────────────────────────── FILE MANAGEMENT ──────────────────
 
     def add_files(self):
         files = filedialog.askopenfilenames(
-            title="Chọn file PDF, Word hoặc Excel",
+            title="Select PDF, Word or Excel files",
             filetypes=[
-                ("File PDF / Word / Excel", "*.pdf *.docx *.xlsx *.xlsm"),
-                ("File PDF", "*.pdf"),
-                ("File Word", "*.docx"),
-                ("File Excel", "*.xlsx *.xlsm"),
-                ("Tất cả file", "*.*"),
+                ("PDF / Word / Excel", "*.pdf *.docx *.xlsx *.xlsm"),
+                ("PDF", "*.pdf"),
+                ("Word", "*.docx"),
+                ("Excel", "*.xlsx *.xlsm"),
+                ("All files", "*.*"),
             ]
         )
         for f in files:
@@ -294,15 +306,15 @@ class PDFFlattenerGUI:
 
     def add_directory(self):
         dir_path = filedialog.askdirectory(
-            title="Chọn thư mục chứa file PDF / Word / Excel"
+            title="Select a folder of PDF / Word / Excel files"
         )
         if not dir_path:
             return
         doc_files = _documents_in(Path(dir_path))
         if not doc_files:
             messagebox.showinfo(
-                "Thông báo",
-                "Không tìm thấy file PDF, Word hoặc Excel nào trong thư mục đã chọn.",
+                "Nothing to do",
+                "No PDF, Word or Excel file was found in that folder.",
             )
             return
         for path in doc_files:
@@ -315,7 +327,7 @@ class PDFFlattenerGUI:
             return
         self.files_to_process.clear()
         self._update_treeview()
-        self.status_lbl.config(text="Sẵn sàng xử lý.")
+        self.status_lbl.config(text="Ready.")
         self.progress_bar["value"] = 0
 
     def _update_treeview(self):
@@ -328,9 +340,9 @@ class PDFFlattenerGUI:
                 size_str = f"{size_bytes/(1024*1024):.2f} MB" if size_bytes >= 1024*1024 else f"{size_bytes/1024:.0f} KB"
             except OSError:
                 size_str = "?"
-            self.tree.insert("", tk.END, iid=str(path), values=(path.name, size_str, "Chờ xử lý"))
+            self.tree.insert("", tk.END, iid=str(path), values=(path.name, size_str, "Queued"))
 
-        self.lbl_count.config(text=f"Đã chọn: {len(self.files_to_process)} file")
+        self.lbl_count.config(text=f"{len(self.files_to_process)} file(s) selected")
 
     def open_output_dir(self):
         open_folder(self.output_dir)
@@ -339,7 +351,7 @@ class PDFFlattenerGUI:
 
     def start_processing(self):
         if not self.files_to_process:
-            messagebox.showwarning("Cảnh báo", "Vui lòng chọn ít nhất 1 file PDF / Word / Excel để xử lý.")
+            messagebox.showwarning("No files", "Select at least one PDF, Word or Excel file first.")
             return
         if self.is_processing:
             return
@@ -356,9 +368,14 @@ class PDFFlattenerGUI:
 
         # Building the pipeline imports pdfplumber and friends, so it is kept
         # between runs and only paid for once.
+        numbering = self.numbering_var.get()
         if self.pipeline is None:
-            self.root.after(0, lambda: self.status_lbl.config(text="Đang khởi tạo..."))
-            self.pipeline = PDFTableFlattenerPipeline()
+            self.root.after(0, lambda: self.status_lbl.config(text="Starting up..."))
+            self.pipeline = PDFTableFlattenerPipeline(numbering=numbering)
+        elif self.pipeline.numbering != numbering:
+            # The checkbox was changed between two runs; a cached pipeline would
+            # otherwise keep using the setting of the first one.
+            self.pipeline = PDFTableFlattenerPipeline(numbering=numbering)
 
         total = len(self.files_to_process)
         success_count = 0
@@ -372,49 +389,51 @@ class PDFFlattenerGUI:
             if out_file is None:
                 fail_count += 1
                 self.root.after(0, lambda p=pdf_path: self._update_file_status(
-                    p, "❌ File nằm trong thư mục kết quả"
+                    p, "❌ Already in the output folder"
                 ))
                 self.root.after(0, lambda val=idx: self.progress_bar.config(value=val))
                 continue
 
-            self.root.after(0, lambda p=pdf_path: self._update_file_status(p, "Đang xử lý..."))
+            self.root.after(0, lambda p=pdf_path: self._update_file_status(p, "Working..."))
             self.root.after(0, lambda i=idx, t=total, p=pdf_path: self.status_lbl.config(
-                text=f"[{i}/{t}] Đang xử lý: {p.name}"
+                text=f"[{i}/{t}] Processing: {p.name}"
             ))
 
             try:
                 summary = self.pipeline.process(str(pdf_path), str(out_file))
                 tables_cnt = summary.get("total_tables_flattened", 0)
                 if summary.get("verification_passed", True):
-                    status_text = f"✅ Xong ({tables_cnt} bảng)"
+                    status_text = f"✅ Done ({tables_cnt} tables)"
                 else:
-                    status_text = f"⚠️ Xong ({tables_cnt} bảng) - kiểm tra chưa đạt"
+                    status_text = f"⚠️ Done ({tables_cnt} tables) - self-check failed"
                 success_count += 1
                 self.root.after(0, lambda p=pdf_path, st=status_text: self._update_file_status(p, st))
             except Exception as e:
                 fail_count += 1
-                err_msg = f"❌ Lỗi: {str(e)[:30]}"
+                err_msg = f"❌ Error: {str(e)[:30]}"
                 self.root.after(0, lambda p=pdf_path, st=err_msg: self._update_file_status(p, st))
 
             self.root.after(0, lambda val=idx: self.progress_bar.config(value=val))
 
-        summary_msg = f"Hoàn thành! Thành công: {success_count}/{total} file."
+        summary_msg = f"Finished: {success_count}/{total} file(s) succeeded."
         if fail_count > 0:
-            summary_msg += f" (Lỗi: {fail_count})"
+            summary_msg += f" ({fail_count} failed)"
 
         self.root.after(0, lambda: self._finish_processing(summary_msg))
 
     def _output_path_for(self, source: Path, used_names: set) -> Path | None:
         """Where this file's result goes, or None when that would clobber it.
 
-        The output now keeps the input's own name, so two guards are needed:
-        a file already sitting in the results folder must not be overwritten,
-        and two inputs of the same name from different folders must not land on
-        top of each other.  Only the extension may differ: an Excel workbook is
-        flattened into Word, because a bullet list is not a grid of cells.
+        The output keeps the input's own name with `_flattened` appended, so two
+        guards are still needed: a file already sitting in the results folder
+        must not be overwritten, and two inputs of the same name from different
+        folders must not land on top of each other.  Only the extension may
+        differ: an Excel workbook is flattened into Word, because a bullet list
+        is not a grid of cells.
         """
         suffix = output_suffix_for(str(source))
-        candidate = self.output_dir / f"{source.stem}{suffix}"
+        stem = output_stem_for(str(source))
+        candidate = self.output_dir / f"{stem}{suffix}"
         try:
             if candidate.resolve() == source.resolve():
                 return None
@@ -423,9 +442,9 @@ class PDFFlattenerGUI:
 
         if candidate.name.lower() in used_names:
             n = 2
-            while f"{source.stem} ({n}){suffix}".lower() in used_names:
+            while f"{stem} ({n}){suffix}".lower() in used_names:
                 n += 1
-            candidate = self.output_dir / f"{source.stem} ({n}){suffix}"
+            candidate = self.output_dir / f"{stem} ({n}){suffix}"
 
         used_names.add(candidate.name.lower())
         return candidate
@@ -441,7 +460,7 @@ class PDFFlattenerGUI:
         self.is_processing = False
         self.btn_run.config(state=tk.NORMAL)
         self.status_lbl.config(text=msg)
-        messagebox.showinfo("Hoàn tất", f"{msg}\n\nFile kết quả được lưu tại:\n{self.output_dir}")
+        messagebox.showinfo("Finished", f"{msg}\n\nResults were written to:\n{self.output_dir}")
 
 
 def main():

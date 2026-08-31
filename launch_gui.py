@@ -1,64 +1,57 @@
+"""PDF Table Flattener - GUI launcher.
+
+Double-click this file to open the GUI.  It exists so the app starts with the
+right working directory and import path no matter how it was launched, and so a
+missing dependency surfaces as a dialog rather than a console traceback nobody
+sees.
 """
-PDF Table Flattener - Launcher
-Double-click this file to open the GUI.
-This launcher ensures correct working directory regardless of how it is launched.
-"""
-import sys
 import os
-import subprocess
+import sys
 from pathlib import Path
 
-# Always cd to the directory this file lives in
+# Always run from the directory this file lives in.
 THIS_DIR = Path(__file__).resolve().parent
 os.chdir(THIS_DIR)
 
-# Ensure project root on sys.path
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
-# Now launch the GUI in the same process (no subprocess) so errors surface via messagebox
 try:
-    # Reconfigure encoding
-    if hasattr(sys.stdout, 'reconfigure'):
+    for _stream in (sys.stdout, sys.stderr):
         try:
-            sys.stdout.reconfigure(encoding='utf-8')
-        except Exception:
-            pass
-    if hasattr(sys.stderr, 'reconfigure'):
-        try:
-            sys.stderr.reconfigure(encoding='utf-8')
-        except Exception:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
             pass
 
-    # Import and run GUI
     import tkinter as tk
     from tkinter import messagebox
 
     try:
-        from src.pdf_table_tool.pipeline import PDFTableFlattenerPipeline
+        from src.pdf_table_tool.pipeline import PDFTableFlattenerPipeline  # noqa: F401
     except Exception as import_err:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror(
-            "Lỗi khởi động",
-            f"Không thể import module:\n{import_err}\n\n"
-            f"Thư mục hiện tại: {THIS_DIR}\n\n"
-            "Hãy đảm bảo bạn đã cài đủ dependencies:\n"
-            "  pip install pdfplumber PyMuPDF"
+            "Startup error",
+            f"Could not import the application:\n{import_err}\n\n"
+            f"Working directory: {THIS_DIR}\n\n"
+            "Install the dependencies first:\n"
+            "  pip install -r requirements.txt",
         )
         sys.exit(1)
 
-    # All good - run GUI
-    from gui import PDFFlattenerGUI, main
+    from gui import main
+
     main()
 
-except Exception as e:
+except Exception as exc:  # pragma: no cover - last-resort dialog
     try:
         import tkinter as tk
         from tkinter import messagebox
+
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Lỗi nghiêm trọng", f"Ứng dụng gặp lỗi:\n\n{e}")
+        messagebox.showerror("Fatal error", f"The application crashed:\n\n{exc}")
     except Exception:
         pass
     sys.exit(1)

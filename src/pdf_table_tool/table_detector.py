@@ -82,6 +82,55 @@ TABLE_SETTINGS_LINES = {
 }
 
 
+def _is_white(colour: Any) -> bool:
+    """True for the colour of a blank page, in any of the spaces PDFs use."""
+    if colour is None:
+        return False
+    if isinstance(colour, (int, float)):
+        return float(colour) >= 0.999          # DeviceGray
+    try:
+        values = [float(c) for c in colour]
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return False
+    if len(values) == 1:
+        return values[0] >= 0.999
+    if len(values) == 3:
+        return all(v >= 0.999 for v in values)  # DeviceRGB
+    if len(values) == 4:
+        return all(v <= 0.001 for v in values)  # DeviceCMYK
+    return False
+
+
+def _draws_nothing(obj: Dict[str, Any]) -> bool:
+    """True for a shape that puts no mark on a white page.
+
+    Some generators lay a white, unstroked rectangle behind every paragraph.
+    pdfplumber turns the edges of a shape into rulings whether or not it is ever
+    drawn, so such a page of prose arrives as a stack of one-row tables -- and
+    the flattener then rewrites running text as bullets.  A shape that is not
+    stroked and is filled with nothing but white cannot be part of a table
+    because it cannot be seen.  A coloured fill is left alone: a header band
+    with no rulings of its own really does mark out a row.
+
+    Whether a rectangle arrives as a ``rect`` or as a closed ``curve`` depends
+    on which operator the producer chose, so both are covered.
+    """
+    if obj.get("object_type") not in ("rect", "curve"):
+        return False
+    if obj.get("stroke"):
+        return False
+    return not obj.get("fill") or _is_white(obj.get("non_stroking_color"))
+
+
+def visible_page(page):
+    """`page` without the shapes that draw nothing."""
+    try:
+        return page.filter(lambda obj: not _draws_nothing(obj))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not filter invisible rectangles: %s", exc)
+        return page
+
+
 def _absorb_rules(page, block) -> Tuple[List[float], List[float]]:
     """Pull partly-ruled tables' own lines into the detected block.
 
@@ -161,6 +210,7 @@ def detect_tables_by_page(
 
     with pdfplumber.open(pdf_path) as pdf:
         for page_num, page in enumerate(pdf.pages):
+            page = visible_page(page)
             try:
                 found = page.find_tables(TABLE_SETTINGS_LINES)
             except Exception as exc:  # pragma: no cover - defensive

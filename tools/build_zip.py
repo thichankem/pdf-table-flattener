@@ -48,19 +48,20 @@ EXCLUDED_DIRS = {
 
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".zip", ".log"}
 
+# The app ships no documents of its own, so any that are lying around a
+# developer's checkout are their own sample files -- private by default, and
+# the one thing that must never end up in an archive handed to someone else.
+DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".xls"}
+
 # Named files that are development notes or one-off outputs, not part of the app.
 EXCLUDED_NAMES = {
     ".DS_Store",
     "Thumbs.db",
-    "output_loc_phat_trang_an.pdf",
-    "create_desktop_shortcut.py",
-    "setup_shortcut.py",
-    "setup_shortcut_v2.py",
 }
 
-# The design write-ups are useful in the repo and only confusing in a package
+# Developer-only files: useful in the repository, only confusing in a package
 # handed to someone who just wants to flatten a PDF.
-EXCLUDED_GLOBS = ["solution*.md", "intergation.md", "test.md"]
+EXCLUDED_GLOBS = [".github/*", ".github/**/*"]
 
 # Anything a POSIX machine must be allowed to execute after unzipping.
 EXECUTABLE_SUFFIXES = {".sh", ".command"}
@@ -78,7 +79,10 @@ def excluded(path: Path) -> bool:
     relative = path.relative_to(APP_ROOT)
     if any(part in EXCLUDED_DIRS for part in relative.parts):
         return True
-    if path.name in EXCLUDED_NAMES or path.suffix.lower() in EXCLUDED_SUFFIXES:
+    suffix = path.suffix.lower()
+    if path.name in EXCLUDED_NAMES or suffix in EXCLUDED_SUFFIXES:
+        return True
+    if suffix in DOCUMENT_SUFFIXES:
         return True
     return any(path.match(pattern) for pattern in EXCLUDED_GLOBS)
 
@@ -109,7 +113,7 @@ def main() -> int:
             "START_Windows.bat",
             "START_macOS.command",
             "START_Linux.sh",
-            "HUONG_DAN.txt",
+            "README.md",
             "requirements.txt",
             "tools/bootstrap.py",
             "tools/posix_launch.sh",
@@ -117,7 +121,7 @@ def main() -> int:
         if not (APP_ROOT / name).exists()
     ]
     if missing:
-        print("Thiếu file bắt buộc: " + ", ".join(missing), file=sys.stderr)
+        print("Required files are missing: " + ", ".join(missing), file=sys.stderr)
         return 1
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
@@ -132,10 +136,10 @@ def main() -> int:
             shipped.append(arcname)
 
     size_mb = archive_path.stat().st_size / (1024 * 1024)
-    print(f"Đã đóng gói {len(shipped)} file -> {archive_path} ({size_mb:.2f} MB)")
-    print("\nGửi file .zip này cho người khác. Họ chỉ cần:")
-    print("  1. Giải nén")
-    print("  2. Nháy đúp START_Windows.bat / START_macOS.command / START_Linux.sh")
+    print(f"Packaged {len(shipped)} files -> {archive_path} ({size_mb:.2f} MB)")
+    print("\nSend this .zip to anyone. All they have to do is:")
+    print("  1. Unzip it")
+    print("  2. Double-click START_Windows.bat / START_macOS.command / START_Linux.sh")
     return 0
 
 

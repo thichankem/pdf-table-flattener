@@ -89,10 +89,10 @@ class Settings:
         if found:
             return found
         raise RuntimeError(
-            "Không tìm thấy font TrueType hỗ trợ Unicode.\n"
-            f"Hãy chép một file .ttf vào {cls.FONTS_DIR} "
-            "(ví dụ NotoSans-Regular.ttf) để hiển thị được tiếng Việt.\n"
-            "Chạy lại script START_<hệ điều hành> để tự tải font Noto về."
+            "No Unicode-capable TrueType font was found.\n"
+            f"Copy a .ttf file into {cls.FONTS_DIR} "
+            "(NotoSans-Regular.ttf, for example) so accented text renders.\n"
+            "Re-running START_<your OS> downloads the Noto fonts automatically."
         )
 
 

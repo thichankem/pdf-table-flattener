@@ -144,27 +144,43 @@ def _rect_distance(bbox: BBox, x: float, y: float) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
-def _join_words(group: List[Dict[str, Any]]) -> str:
-    """Concatenate a line's words, inserting a space only where one was drawn.
+def _font_size(word: Dict[str, Any]) -> float:
+    """The size the word was set at, falling back to how tall it was drawn."""
+    size = word.get("size")
+    if size:
+        return float(size)
+    return max(1.0, float(word["bottom"]) - float(word["top"]))
+
+
+def _blank_between(prev: Dict[str, Any], word: Dict[str, Any]) -> bool:
+    """Was a blank drawn between these two words, or do they merely touch?
 
     A glyph set in a different font -- the minus of "-3%", a bracket, a currency
     symbol -- is reported as its own word even though it touches its neighbour.
     Joining everything with a blank would turn "-3%" into "- 3%", which then
     reads as a bullet and loses the sign.
+
+    The two are told apart by the gap alone, measured against the *font size*.
+    Characters drawn one after another advance to exactly where the next one
+    starts, so a font change mid-word leaves no gap at all; a blank leaves the
+    width of a space, which is a fifth of the size even in the narrowest font.
+    Measuring it against the width of the neighbouring characters instead is
+    what used to fuse "Mục đích" into "Mụcđích": a column of justified text
+    squeezes its blanks well below the width of a Vietnamese syllable.
     """
+    gap = float(word["x0"]) - float(prev["x1"])
+    if gap <= 0:
+        return False
+    return gap > max(_font_size(prev), _font_size(word)) * 0.05
+
+
+def _join_words(group: List[Dict[str, Any]]) -> str:
+    """Concatenate a line's words, inserting a space only where one was drawn."""
     if not group:
         return ""
-    widths = [
-        (w["x1"] - w["x0"]) / max(1, len(w["text"]))
-        for w in group
-        if w["x1"] > w["x0"] and w["text"]
-    ]
-    char_w = sorted(widths)[len(widths) // 2] if widths else 5.0
-    threshold = char_w * 0.35
-
     parts = [group[0]["text"]]
     for prev, w in zip(group, group[1:]):
-        if w["x0"] - prev["x1"] > threshold:
+        if _blank_between(prev, w):
             parts.append(" ")
         parts.append(w["text"])
     return "".join(parts)

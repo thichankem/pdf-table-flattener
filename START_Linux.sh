@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ===================================================================
-#  PDF Table Flattener — trình khởi chạy cho Linux
+#  PDF Table Flattener - Linux launcher
 #
-#  Chạy bằng một trong hai cách:
-#    • Mở Terminal trong thư mục này rồi gõ:  ./START_Linux.sh
-#    • Hoặc nháy đúp chuột (chọn "Run"/"Chạy" nếu được hỏi).
+#  Run it either way:
+#    * open a terminal in this folder and type:  ./START_Linux.sh
+#    * or double-click it (choose "Run" if asked).
 #
-#  Lần chạy đầu tiên sẽ tự tạo lối tắt trong menu ứng dụng của hệ thống.
+#  The first run installs an application-menu entry for the desktop.
 # ===================================================================
 set -u
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ install_desktop_entry() {
 [Desktop Entry]
 Type=Application
 Name=PDF Table Flattener
-Comment=Làm phẳng bảng trong PDF / Word / Excel thành gạch đầu dòng
+Comment=Flatten tables in PDF / Word / Excel documents into bullet points
 Exec=bash "$APP_ROOT/START_Linux.sh"
 Path=$APP_ROOT
 Icon=x-office-document

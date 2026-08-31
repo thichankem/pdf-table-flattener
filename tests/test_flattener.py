@@ -1,4 +1,4 @@
-"""End-to-end tests: the three mandatory criteria of test.md, on real PDFs.
+"""End-to-end tests: the three mandatory acceptance criteria, on real PDFs.
 
     1. Content outside tables is untouched, 100%.
     2. Every table is flattened into bullets; no table survives.

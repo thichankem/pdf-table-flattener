@@ -1,4 +1,4 @@
-"""Automatic verification of the three acceptance criteria in test.md.
+"""Automatic verification of the three acceptance criteria (see README.md).
 
 The pipeline runs this on its own output, so a regression surfaces as a failed
 report instead of a silently mangled PDF.
@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 import fitz
 import pdfplumber
 
+from .table_detector import visible_page
 from .text_utils import tokenize
 
 logger = logging.getLogger(__name__)
@@ -22,11 +23,15 @@ logger = logging.getLogger(__name__)
 # Any label the tool must never invent.
 FAKE_LABEL_RE = re.compile(r"\b(cột|column|col)\s*\d+\s*:", re.IGNORECASE)
 # Control / formatting characters that should never survive into the output.
+# Items 1 and 2 of the normalisation checklist (NORM §8): no control or
+# zero-width character, nothing left in the private use area -- no text font has
+# a glyph there, so the index would read a replacement character -- and no
+# U+FFFD, which is what a decoder writes where it gave up.
 STRAY_CHAR_RE = re.compile(
     "[" + "".join(chr(c) for c in
                   list(range(0x00, 0x09)) + list(range(0x0B, 0x20)) +
-                  [0xAD, 0x2060, 0xFEFF] + list(range(0x200B, 0x2010)) +
-                  list(range(0x202A, 0x202F))) + "]"
+                  [0xAD, 0x2060, 0xFEFF, 0xFFFD] + list(range(0x200B, 0x2010)) +
+                  list(range(0x202A, 0x202F)) + list(range(0xE000, 0xF900))) + "]"
 )
 
 
@@ -64,22 +69,22 @@ class VerificationReport:
 
     def describe(self) -> str:
         rows = [
-            ("Tiêu chí 1+2: không mất nội dung", self.criterion_1_and_2_ok),
-            ("Tiêu chí 2: không còn bảng nào", self.criterion_2_ok),
-            ("Tiêu chí 3: sạch sẽ, không rác", self.criterion_3_ok),
+            ("Criteria 1+2: no content was lost", self.criterion_1_and_2_ok),
+            ("Criterion 2: no table survives", self.criterion_2_ok),
+            ("Criterion 3: clean output, no junk", self.criterion_3_ok),
         ]
         out = [f"  {'PASS' if ok else 'FAIL'}  {name}" for name, ok in rows]
         if self.missing_tokens:
             for page, toks in list(self.missing_tokens.items())[:10]:
-                out.append(f"      trang {page}: thiếu {toks[:15]}")
+                out.append(f"      page {page}: missing {toks[:15]}")
         if self.residual_table_pages:
-            out.append(f"      còn bảng ở trang: {self.residual_table_pages}")
+            out.append(f"      tables left on pages: {self.residual_table_pages}")
         if self.fake_labels:
-            out.append(f"      nhãn giả: {self.fake_labels[:5]}")
+            out.append(f"      invented labels: {self.fake_labels[:5]}")
         if self.stray_characters:
-            out.append(f"      ký tự lạ: {self.stray_characters[:5]}")
+            out.append(f"      stray characters: {self.stray_characters[:5]}")
         if self.double_blank_lines:
-            out.append(f"      dòng trống liên tiếp ở trang: {self.double_blank_lines}")
+            out.append(f"      consecutive blank lines on pages: {self.double_blank_lines}")
         out.append(
             f"      tokens: input={self.input_token_count} output={self.output_token_count}"
         )
@@ -253,7 +258,7 @@ def verify(
     output_path: str,
     generated_lines: Optional[List[str]] = None,
 ) -> VerificationReport:
-    """Check the output PDF against the three criteria of test.md.
+    """Check the output PDF against the three acceptance criteria.
 
     `generated_lines` are the bullet lines the tool produced.  Criterion 3 is
     checked against them rather than against ``page.get_text()``, because a
@@ -327,6 +332,9 @@ def verify(
 
     with pdfplumber.open(output_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
+            # The same view of the page the detector had: a rectangle nobody can
+            # see is not a table here either.
+            page = visible_page(page)
             try:
                 tables = page.find_tables(
                     {

@@ -1,60 +1,133 @@
+"""Create a Windows desktop shortcut that opens the GUI.
+
+Run once:  python create_desktop_shortcut.py
+
+Only Windows needs this.  macOS users double-click ``START_macOS.command``, and
+``START_Linux.sh`` installs its own application-menu entry on first run.
+"""
+
 import os
-import sys
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8')
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # pragma: no cover - odd stream
+        pass
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-GUI_SCRIPT = PROJECT_ROOT / "gui.py"
-PYTHONW_EXE = Path(sys.executable).parent / "pythonw.exe"
-if not PYTHONW_EXE.exists():
-    PYTHONW_EXE = Path(sys.executable)
+GUI_SCRIPT = PROJECT_ROOT / "launch_gui.py"
+SHORTCUT_NAME = "PDF Table Flattener.lnk"
 
-def setup_desktop_shortcut():
-    desktop_paths = [
-        Path("C:/Users/ADMIN/OneDrive/Máy tính"),
-        Path("C:/Users/ADMIN/Desktop"),
-        Path(os.path.expanduser("~/Desktop")),
-        Path(os.path.expanduser("~/OneDrive/Máy tính")),
+
+def _find_pythonw() -> Path:
+    """Prefer the project's own .venv.
+
+    That is the only interpreter guaranteed to have the dependencies installed;
+    a shortcut pointing at a system or Anaconda interpreter starts and dies
+    silently under pythonw.exe, with no window to show the traceback.
+    """
+    candidates = [
+        PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe",
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+        Path(sys.executable).parent / "pythonw.exe",
+        Path(sys.executable),
     ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path(sys.executable)
 
-    valid_desktops = list({p.resolve() for p in desktop_paths if p.exists()})
 
-    for desktop in valid_desktops:
-        # 1. Remove old .bat files
-        for bat_name in ["Làm Phẳng Bảng PDF.bat", "Lam_Phang_Bang_PDF.bat"]:
-            bat_file = desktop / bat_name
-            if bat_file.exists():
-                try:
-                    bat_file.unlink()
-                    print(f"Removed bat file: {bat_file}")
-                except Exception as e:
-                    print(f"Could not remove bat file {bat_file}: {e}")
+def _desktop_dirs() -> list[Path]:
+    """Every folder Windows might currently be using as the desktop.
 
-        # 2. Create clean Windows .lnk Shortcut
-        for lnk_name in ["Làm Phẳng Bảng PDF.lnk", "PDF Table Flattener.lnk"]:
-            lnk_path = desktop / lnk_name
-            cmd = [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-Command",
-                f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk_path}'); "
-                f"$s.TargetPath='{PYTHONW_EXE}'; "
-                f"$s.Arguments='\"{GUI_SCRIPT}\"'; "
-                f"$s.WorkingDirectory='\"{PROJECT_ROOT}\"'; "
-                f"$s.Description='Làm phẳng Bảng PDF'; "
-                f"$s.Save()"
-            ]
-            try:
-                subprocess.run(cmd, check=True)
-                print(f"Successfully created Windows shortcut (.lnk): {lnk_path}")
-            except Exception as e:
-                print(f"Shortcut creation info ({lnk_path}): {e}")
+    The desktop is not always ``~/Desktop``: OneDrive redirects it, and it is
+    then named in the user's own language.  The registry holds the real path,
+    so it is asked first and the usual locations are only a fallback.
+    """
+    found: list[Path] = []
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        )
+        with key:
+            raw, _ = winreg.QueryValueEx(key, "Desktop")
+        found.append(Path(os.path.expandvars(raw)))
+    except (ImportError, OSError):
+        pass
+
+    home = Path.home()
+    found += [home / "Desktop", home / "OneDrive" / "Desktop"]
+    return list({p.resolve() for p in found if p.is_dir()})
+
+
+def _create_lnk(lnk_path: Path, pythonw: Path) -> None:
+    """Create one .lnk via WScript.Shell.
+
+    Two Windows encoding traps are worked around here:
+
+    1. The script is handed to PowerShell as a UTF-8-with-BOM *file* rather than
+       a -Command string; a command line goes through the console code page.
+    2. WScript.Shell.Save() is ANSI-based, so it cannot write to a path holding
+       characters outside the system code page.  It therefore saves under an
+       ASCII name, and Python -- which is fully Unicode -- does the rename.
+    """
+    tmp_lnk = lnk_path.with_name("_new_shortcut.lnk")
+    script = (
+        f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{tmp_lnk}')\n"
+        f"$s.TargetPath='{pythonw}'\n"
+        f"$s.Arguments='\"{GUI_SCRIPT}\"'\n"
+        f"$s.WorkingDirectory='{PROJECT_ROOT}'\n"
+        f"$s.Description='PDF Table Flattener'\n"
+        f"$s.Save()\n"
+    )
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".ps1", encoding="utf-8-sig", delete=False
+    ) as fh:
+        fh.write(script)
+        ps1 = fh.name
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1],
+            check=True,
+        )
+    finally:
+        os.unlink(ps1)
+
+    if not tmp_lnk.exists():
+        raise RuntimeError(f"PowerShell did not produce {tmp_lnk}")
+    os.replace(tmp_lnk, lnk_path)
+
+
+def main() -> int:
+    if not sys.platform.startswith("win"):
+        print("This script only does anything on Windows.")
+        return 1
+
+    pythonw = _find_pythonw()
+    desktops = _desktop_dirs()
+    if not desktops:
+        print("Could not locate the desktop folder.")
+        return 1
+
+    failures = 0
+    for desktop in desktops:
+        lnk_path = desktop / SHORTCUT_NAME
+        try:
+            _create_lnk(lnk_path, pythonw)
+            print(f"Created shortcut: {lnk_path}")
+        except Exception as exc:
+            failures += 1
+            print(f"Could not create {lnk_path}: {exc}")
+    return 1 if failures == len(desktops) else 0
+
 
 if __name__ == "__main__":
-    setup_desktop_shortcut()
+    sys.exit(main())

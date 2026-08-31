@@ -9,7 +9,7 @@ set -u
 
 APP_ROOT="$1"
 shift
-cd "$APP_ROOT" || { echo "Không vào được thư mục ứng dụng: $APP_ROOT"; exit 1; }
+cd "$APP_ROOT" || { echo "Cannot enter the application folder: $APP_ROOT"; exit 1; }
 
 MODE_ARGS=("$@")
 [ ${#MODE_ARGS[@]} -eq 0 ] && MODE_ARGS=(--mode gui)
@@ -18,12 +18,12 @@ BOOTSTRAP="$APP_ROOT/tools/bootstrap.py"
 
 die() {
     echo ""
-    echo "LỖI: $*"
+    echo "ERROR: $*"
     echo ""
     # A double-clicked window closes the instant the script ends, taking the
     # error message with it -- so hold it open when there is a terminal to hold.
     if [ -t 0 ]; then
-        read -r -p "Nhấn Enter để đóng..." _ || true
+        read -r -p "Press Enter to close..." _ || true
     fi
     exit 1
 }
@@ -52,9 +52,9 @@ if [ -z "$PYEXE" ]; then
     cat <<'BANNER'
 
 ===================================================================
-  Máy này chưa có Python phù hợp.
-  Đang tải về một bản Python riêng cho ứng dụng.
-  Bước này chỉ chạy MỘT lần và cần kết nối Internet.
+  No suitable Python was found on this machine.
+  Downloading a private copy of Python just for this app.
+  This runs ONCE and needs an Internet connection.
 ===================================================================
 
 BANNER
@@ -64,29 +64,29 @@ BANNER
     done
 
     if [ -z "$UV" ]; then
-        echo "[1/2] Đang tải bộ cài đặt..."
+        echo "[1/2] Downloading the installer..."
         if command -v curl >/dev/null 2>&1; then
             curl -LsSf https://astral.sh/uv/install.sh | sh || true
         elif command -v wget >/dev/null 2>&1; then
             wget -qO- https://astral.sh/uv/install.sh | sh || true
         else
-            die "máy không có curl lẫn wget. Hãy cài Python 3.10+ thủ công tại https://www.python.org/downloads/"
+            die "neither curl nor wget is available. Install Python 3.10+ manually from https://www.python.org/downloads/"
         fi
         for uv_path in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
             [ -x "$uv_path" ] && { UV="$uv_path"; break; }
         done
     fi
 
-    [ -n "$UV" ] || die "không tải được bộ cài đặt tự động.
-Hãy cài Python 3.10+ thủ công:
-  • macOS : https://www.python.org/downloads/macos/
-  • Linux : sudo apt install python3 python3-venv python3-tk
-Cài xong thì chạy lại file này."
+    [ -n "$UV" ] || die "the automatic installer could not be downloaded.
+Install Python 3.10+ manually:
+  * macOS : https://www.python.org/downloads/macos/
+  * Linux : sudo apt install python3 python3-venv python3-tk
+Then run this file again."
 
-    echo "[2/2] Đang cài Python 3.12..."
-    "$UV" python install 3.12 || die "không cài được Python 3.12."
+    echo "[2/2] Installing Python 3.12..."
+    "$UV" python install 3.12 || die "Python 3.12 could not be installed."
     PYEXE="$("$UV" python find 3.12 2>/dev/null || true)"
-    [ -n "$PYEXE" ] && [ -x "$PYEXE" ] || die "không tìm thấy Python vừa cài."
+    [ -n "$PYEXE" ] && [ -x "$PYEXE" ] || die "the freshly installed Python could not be found."
 fi
 
 # --- Hand over to the cross-platform bootstrap --------------------------------
@@ -94,9 +94,9 @@ fi
 status=$?
 if [ $status -ne 0 ]; then
     echo ""
-    echo "Ứng dụng kết thúc với lỗi (mã $status). Đọc thông báo bên trên để biết nguyên nhân."
+    echo "The application exited with an error (status $status). See the message above."
     if [ -t 0 ]; then
-        read -r -p "Nhấn Enter để đóng..." _ || true
+        read -r -p "Press Enter to close..." _ || true
     fi
 fi
 exit $status

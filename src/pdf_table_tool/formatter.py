@@ -1,8 +1,8 @@
 """Turn an extracted :class:`Grid` into flat bullet lines.
 
-Output shape (test.md):
+Output shape:
 
-    - Tên: Nam  |  Tuổi: 25  |  Chức vụ: Dev
+    - Name: Alice  |  Age: 25  |  Role: Engineer
 
 Rows whose last column holds a long, multi-paragraph cell are rendered as a
 header line plus indented sub-bullets, because squeezing several paragraphs onto
@@ -28,6 +28,8 @@ from .text_utils import (
     collapse_blank_lines,
     is_bullet_line,
     join_wrapped_lines,
+    split_inline_items,
+    starts_with_index,
     strip_bullet,
     tokenize,
 )
@@ -36,10 +38,26 @@ logger = logging.getLogger(__name__)
 
 SEPARATOR = "  |  "
 INDENT_UNIT = "  "
-LEVEL_MARKERS = ["-", "+", "*"]
+# The glyph a nested line gets when the source document wrote none of its own.
+# One glyph whatever the depth: how deep a line sits is said by its indent, and
+# by the words of its row that `outline.number_table_lines` puts in front of it.
+# A different glyph per level says that same thing to nobody.
+DEFAULT_MARKER = "-"
 
 _FAKE_HEADER_RE = re.compile(
     r"^(cột|cot|column|col|field|trường|unnamed|no\.?|#)\s*\d*$", re.IGNORECASE
+)
+
+# The header of a column that does nothing but count the rows: "STT", "TT",
+# "Số TT", "No.".  It labels nothing -- "STT: 1" says no more than "1" does --
+# and a chunk of the table retrieved on its own is no easier to place for having
+# the word in it, so it is never printed in front of a value.  The word is not
+# thrown away: it stays among the column headers, and `number_table_lines`
+# writes it once on the table's caption line.
+_INDEX_HEADER_RE = re.compile(
+    r"^(stt|s\.t\.t|tt|số\s*tt|số\s*thứ\s*tự|thứ\s*tự\s*số|"
+    r"no\.?|num|number|index|idx|#)\s*[.:]?\s*\d*$",
+    re.IGNORECASE,
 )
 
 
@@ -60,11 +78,84 @@ class TableStructure:
     source: str = "geometry"
 
 
+# A first column holding nothing but the row's counter: "11", "2.", "3)".
+INDEX_SEGMENT_RE = re.compile(r"^(\d{1,4})\s*[.)]?$")
+
+
+def leading_counter(text: str) -> Optional[int]:
+    """The row counter this line opens with, or None when it opens with none."""
+    match = INDEX_SEGMENT_RE.match(" ".join(text.split(SEPARATOR)[0].split()))
+    return int(match.group(1)) if match else None
+
+
+def indexes_itself(text: str) -> bool:
+    """Does this line already carry an index, so a bullet would mark it twice?
+
+    Either a marker the document punctuated ("a)", "1.") or a whole first column
+    that holds nothing but the row counter ("11  |  Nguồn thu: …").  Writing
+    ``- a)`` or ``- 11`` in front of those indexes the line a second time and
+    says nothing the first index did not.
+    """
+    if starts_with_index(text):
+        return True
+    return SEPARATOR in text and leading_counter(text) is not None
+
+
+def _bulleted(text: str) -> str:
+    """A top-level line: ``- text``, bare when the line indexes itself."""
+    return text if indexes_itself(text) else f"- {text}"
+
+
+def _nested(level: int, item: Item) -> str:
+    """One line nested under a row: its indent, its glyph, its words."""
+    indent = INDENT_UNIT * level
+    if indexes_itself(item.text):
+        return f"{indent}{item.text}"
+    marker = _normalize_marker(item.marker) or DEFAULT_MARKER
+    return f"{indent}{marker} {item.text}"
+
+
+def is_index_label(value: str) -> bool:
+    """Is this header naming a row-counting column rather than labelling data?
+
+    Public because `outline` asks it too: a table that counts its own rows is
+    numbered from its own counter rather than from a count of our own.
+    """
+    return bool(_INDEX_HEADER_RE.match(" ".join((value or "").split())))
+
+
 def _is_fake_header(value: str) -> bool:
-    v = (value or "").strip()
+    """Should this header never be printed in front of a value?
+
+    Either because the tool would be inventing it ("Cột 1"), or because it says
+    nothing the reader does not already see ("STT" in front of "1").
+    """
+    v = " ".join((value or "").split())
     if not v:
         return True
-    return bool(_FAKE_HEADER_RE.match(v))
+    return bool(_FAKE_HEADER_RE.match(v)) or is_index_label(v)
+
+
+def _split_buried_items(items: Sequence[Item]) -> List[Item]:
+    """Break out the list items a cell wrapped into one paragraph.
+
+    The cell holds "a) Sao kê … b) Hồ sơ … c) Lưu ý:" on one line only because
+    the column wrapped it, not because the author wrote it that way; each marker
+    starts an item and belongs on a line of its own.  The pieces stay at the
+    depth of the paragraph they came out of, and none of them keeps a bullet
+    glyph -- their marker is the index they already carry.
+    """
+    out: List[Item] = []
+    for item in items:
+        pieces = split_inline_items(item.text)
+        if len(pieces) < 2:
+            out.append(item)
+            continue
+        out.append(Item(level=item.level, text=pieces[0], marker=item.marker))
+        out.extend(
+            Item(level=item.level, text=piece, marker="") for piece in pieces[1:]
+        )
+    return out
 
 
 def cell_to_items(cell: GridCell) -> List[Item]:
@@ -78,7 +169,7 @@ def cell_to_items(cell: GridCell) -> List[Item]:
     only be able to get it wrong.
     """
     if cell.items is not None:
-        return list(cell.items)
+        return _split_buried_items(cell.items)
 
     lines = [ln for ln in cell.lines if ln.text.strip()]
     if not lines:
@@ -152,7 +243,7 @@ def cell_to_items(cell: GridCell) -> List[Item]:
         prev = ln
 
     flush()
-    return items
+    return _split_buried_items(items)
 
 
 def _is_simple(items: Sequence[Item]) -> bool:
@@ -599,7 +690,7 @@ class TableFormatter:
                 lines.extend(self._render_row(row_cells, headers, label_column))
 
         if not lines and any(h.strip() for h in headers):
-            lines.append("- " + SEPARATOR.join(h for h in headers if h.strip()))
+            lines.append(_bulleted(SEPARATOR.join(h for h in headers if h.strip())))
 
         # Guard against the *original* grid so a bug in cell normalisation can
         # never make text disappear.
@@ -626,7 +717,10 @@ class TableFormatter:
             if not parts:
                 continue
             merged = join_wrapped_lines(parts)
-            headers[c] = "" if _is_fake_header(merged) else merged
+            # An invented label is dropped outright; a row counter's header is
+            # kept here so the caption line can say it once, even though no
+            # value will ever be printed under it.
+            headers[c] = "" if _FAKE_HEADER_RE.match(merged.strip()) else merged
 
         # Horizontally merged header cells label every column they cover.
         for c in range(grid.n_cols):
@@ -681,14 +775,10 @@ class TableFormatter:
                 else:
                     parts.append(f"{label}:" if label else "")
                     for item in items:
-                        level = 1 + item.level
-                        marker = _normalize_marker(item.marker) or LEVEL_MARKERS[
-                            min(level, len(LEVEL_MARKERS) - 1)
-                        ]
-                        trailing.append(f"{INDENT_UNIT * level}{marker} {item.text}")
+                        trailing.append(_nested(1 + item.level, item))
             parts = [p for p in parts if p]
             if parts:
-                out.append("- " + SEPARATOR.join(parts))
+                out.append(_bulleted(SEPARATOR.join(parts)))
             out.extend(trailing)
         return out
 
@@ -711,7 +801,7 @@ class TableFormatter:
                 row_label = first_items[0].text.rstrip(":").strip()
                 parsed = parsed[1:]
                 if not parsed:
-                    return [f"- {row_label}"]
+                    return [_bulleted(row_label)]
 
         # Cells to the left of the first multi-part cell caption the row; from
         # there on, every cell is a value in its own right and keeps its own
@@ -735,7 +825,7 @@ class TableFormatter:
 
         if not complex_cells:
             if head_parts:
-                out.append("- " + SEPARATOR.join(head_parts))
+                out.append(_bulleted(SEPARATOR.join(head_parts)))
             return out
 
         # A multi-part cell still has a column header, and it has to appear
@@ -750,22 +840,18 @@ class TableFormatter:
                               else SEPARATOR.join(f"{c}:" for c in captions))
 
         if head_parts:
-            out.append("- " + SEPARATOR.join(head_parts))
+            out.append(_bulleted(SEPARATOR.join(head_parts)))
         elif row_label:
-            out.append(f"- {row_label}:")
+            out.append(_bulleted(f"{row_label}:"))
 
         for cell, items in complex_cells:
             header = _header_for(cell, headers)
             base_indent = 1 if (head_parts or row_label) else 0
             if not head_parts and not row_label and header and not _is_fake_header(header):
-                out.append(f"- {header.rstrip(':').strip()}:")
+                out.append(_bulleted(f"{header.rstrip(':').strip()}:"))
                 base_indent = 1
             for item in items:
-                level = base_indent + item.level
-                marker = _normalize_marker(item.marker) or LEVEL_MARKERS[
-                    min(level, len(LEVEL_MARKERS) - 1)
-                ]
-                out.append(f"{INDENT_UNIT * level}{marker} {item.text}")
+                out.append(_nested(base_indent + item.level, item))
         return out
 
 
@@ -779,6 +865,10 @@ def _header_for(cell: GridCell, headers: List[str]) -> str:
     """
     for col in range(cell.col, cell.col + max(1, cell.col_span)):
         if 0 <= col < len(headers) and headers[col].strip():
+            # A cell merged across the row counter and the column beside it is
+            # labelled by the column, not by the counter.
+            if _is_fake_header(headers[col]):
+                continue
             return headers[col]
     return ""
 
@@ -839,7 +929,7 @@ def _completeness_guard(
             continue
         for item in cell_to_items(cell):
             if Counter(tokenize(item.text)) & missing:
-                recovered.append(f"- {item.text}")
+                recovered.append(_bulleted(item.text))
                 missing -= Counter(tokenize(item.text))
 
     if recovered:
